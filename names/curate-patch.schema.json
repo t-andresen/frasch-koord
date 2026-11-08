@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://github.com/Commander-Cody/frasch-koord/names/curate-patch.schema.json",
+  "$id": "https://github.com/t-andresen/frasch-koord/names/curate-patch.schema.json",
   "title": "Curation patch entry",
   "description": "One line of names/work/curate-patch.jsonl: a decision the curation view (web `?curate`) made about one row of names/places.csv, or a new row it created, which `frasch curate apply` writes back. `properties` are the fields of every entry; each action has a branch of `allOf` that says which fields it needs and which others it may carry -- a field of another action is refused. The browser appends through the Vite dev server (web/vite-plugins/curate.ts), which sets `at` and stores an entry only if it keeps this schema. The rules that need the name list (is the row the matcher's, is the slug free) are apply's.",
   "type": "object",

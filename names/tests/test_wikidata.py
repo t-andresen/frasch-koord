@@ -99,4 +99,4 @@ def test_a_programming_error_is_no_failed_lookup(
 
 
 def test_user_agent_names_a_contact() -> None:
-    assert "https://github.com/Commander-Cody/frasch-koord" in wikidata.USER_AGENT
+    assert "https://github.com/t-andresen/frasch-koord" in wikidata.USER_AGENT

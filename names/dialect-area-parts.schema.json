@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://github.com/Commander-Cody/frasch-koord/names/dialect-area-parts.schema.json",
+  "$id": "https://github.com/t-andresen/frasch-koord/names/dialect-area-parts.schema.json",
   "title": "Dialect area parts",
   "description": "names/dialect_areas_parts.geojson: one Feature per municipality of names/dialect_areas.csv, and one per municipality of Kreis Nordfriesland no row claims. `frasch build areas` writes it (frasch/build_dialect_areas.py) for the dialect-area review view alone (web `?areas`, web/src/dev/areas/AreaPanel.tsx); nothing in the Python pipeline reads it.",
   "type": "object",

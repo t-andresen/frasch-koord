@@ -25,7 +25,7 @@ API = "https://www.wikidata.org/w/api.php"
 # Wikimedia's User-Agent policy wants a way to reach the operator
 USER_AGENT = (
     "frasch-maps name pipeline/0.1 (North Frisian map; "
-    "https://github.com/Commander-Cody/frasch-koord/issues)"
+    "https://github.com/t-andresen/frasch-koord/issues)"
 )
 # what a country is an instance of (P31): country, sovereign state, ...
 COUNTRY_CLASSES = {"Q6256", "Q3624078", "Q1763527", "Q112099", "Q185441"}
