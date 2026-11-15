@@ -39,6 +39,7 @@ Invoke the `code-review` skill with the fixed point from step 1 and the task fro
 
 - The issue tracker is GitHub, accessed as described in the Agent skills section of `CLAUDE.md`. Ignore the skill's pointer to `docs/agents/issue-tracker.md` and do not run `setup-matt-pocock-skills`.
 - Standards sources include `CLAUDE.md` (notably: no TODOs in code and no parallel issue records in the repo — deferred work belongs in GitHub issues), the READMEs, and `docs/project-decisions.md`.
+- If the PR changes `docs/project-decisions.md`, hold it to the "Recording decisions" rules of `CLAUDE.md`: an entry the code already shows, a change note, an appended dated section or an entry left standing beside the one that replaces it is a finding.
 - If you cannot spawn sub-agents, do both axes yourself, one after the other, keeping their findings separate until step 6.
 
 ## 5. Review beyond the skill
