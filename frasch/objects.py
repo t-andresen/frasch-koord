@@ -18,7 +18,6 @@ file records
   admin_level  of an administrative boundary (see `locate.object_facts`)
   name_nds     OSM's Low Saxon name (see `locate.object_facts`)
   name         OSM's generic name (see `locate.object_facts`)
-  name_frr     OSM's Frisian name (see `locate.object_facts`)
 
 and, as `built_from`, the extracts it was read from (frasch.provenance).  A
 reference that none of them holds is listed in `not_found` (left out when
@@ -56,7 +55,6 @@ class Facts(TypedDict, total=False):
     admin_level: int
     name_nds: str
     name: str
-    name_frr: str
 
 
 class Point(TypedDict):

@@ -19,9 +19,8 @@ name (`name_osm`) is the object's OSM `name`: it is the label chain's generic
 step near its end, and north of the border it is the Danish name, not the
 list's German one, so the card and search results need it to agree with the
 map.  A local reference gets the `name` the injector gives its point.
-The local name (`local`) of a row that has none is the object's OSM
-name in the language of the dialect area it lies in, as the injector writes
-it into `frasch:local` (#81).
+The local name (`local`) is the list's alone, as the injector writes it into
+`frasch:local`: OSM's names are no fallback for a place the list has (#161).
 
 A row whose entry lies at an object the objects file has none for stops the
 export -- it is on the map, and would be missing from search

@@ -67,7 +67,7 @@
           "additionalProperties": { "type": "string", "minLength": 1 }
         },
         "local": {
-          "description": "The name the people of the place itself use (the tiles' `frasch:local`): the name list's, else OSM's name in the language of the dialect area the place lies in (`name:frr` in a Frisian one, `name:nds` in a Low Saxon one, none in a Synnejysk one).",
+          "description": "The name the people of the place itself use (the tiles' `frasch:local`): the name list's `local`, else the list's name in the variety of the dialect area the place lies in. The list's alone: OSM's names are no fallback (issue #161).",
           "type": "string",
           "minLength": 1
         },

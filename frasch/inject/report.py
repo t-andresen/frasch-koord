@@ -123,11 +123,8 @@ def _dialect_lines(stats: Stats, inputs: Inputs) -> list[str]:
         key = placenames.dialect_key(dialect["tag"])
         if n := stats.names[key]:
             lines.append(f"  {key:<20} {n:>5}  {dialect['label']}")
-    claimed, unclaimed = stats.osm_local_claimed, stats.osm_local_unclaimed
-    lines.append(
-        f"  {LOCAL_KEY:<20} {stats.local:>5}  local form"
-        + (f" ({claimed} of them OSM's {FRISIAN_KEY} or name:nds)" if claimed else "")
-    )
+    unclaimed = stats.osm_local_unclaimed
+    lines.append(f"  {LOCAL_KEY:<20} {stats.local:>5}  local form")
     if unclaimed:
         lines.append(
             f"  {LOCAL_KEY:<20} {unclaimed:>5}  OSM's {FRISIAN_KEY} or name:nds on objects no row claims"

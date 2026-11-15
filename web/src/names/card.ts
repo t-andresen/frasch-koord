@@ -75,9 +75,11 @@ function localLines(names: CardNames, headline: string): CardLine[] {
 }
 
 /**
- * OSM's Frisian name of no dialect, for places our list does not have. Not
- * where it only repeats one of the names `shown` on the card already (it
- * usually is the same word as the dialect's): it says nothing worth a line.
+ * OSM's Frisian name of no dialect, of a place our list does not have: a
+ * listed place takes its Frisian names from the list alone (issue #161).
+ * Not where it only repeats one of the names `shown` on the card already
+ * (it usually is the same word as the dialect's): it says nothing worth a
+ * line.
  */
 function frisianLines({ name_frr }: CardNames, shown: string[]): CardLine[] {
   if (!name_frr || shown.includes(name_frr)) return [];
@@ -95,12 +97,12 @@ function languageLines({ name_de, name_da }: CardNames, headline: string): CardL
   );
 }
 
-function cardLines(names: CardNames, shown: ShownName): CardLine[] {
+function cardLines(names: CardNames, shown: ShownName, listed: boolean): CardLine[] {
   const frisian = [...varietyLines(names, shown, FRISIAN_TAGS), ...localLines(names, shown.name)];
   const onCard = [shown.name, ...frisian.map((line) => line.name)];
   return [
     ...frisian,
-    ...frisianLines(names, onCard),
+    ...(listed ? [] : frisianLines(names, onCard)),
     ...nonFrisianLines(names, shown),
     ...languageLines(names, shown.name),
   ];
@@ -118,6 +120,6 @@ export function cardModel(selection: PlaceSelection, view: string): CardModel {
     source: shown.source.kind === 'local' ? localSource(names) : shown.source,
     note: names.local === shown.name ? names.variety : undefined,
     kind: names.kind || undefined,
-    lines: cardLines(names, shown),
+    lines: cardLines(names, shown, selection.entry !== undefined),
   };
 }

@@ -19,8 +19,9 @@ export interface NameEntry {
   names: Record<string, string>;
   /**
    * Name used by the people of the place itself (tile attribute
-   * `frasch:local`): the name list's, else OSM's name in the language of
-   * the dialect area the place lies in — `name:frr` in a Frisian one — (issue #81).
+   * `frasch:local`): the name list's `local`, else the list's name in the
+   * variety of the dialect area the place lies in. The list's alone: OSM's
+   * names are no fallback (issue #161).
    */
   local?: string;
   /** Dialect area the place lies in, e.g. "frr-x-fering". */
@@ -64,7 +65,8 @@ export interface CardNames extends Partial<Pick<NameEntry, NameField>> {
    * Frisian name of no particular dialect — OSM's own `name:frr`, never our
    * name list, which always knows which dialect a name is in. The style
    * labels with it too (see dialects/labelChain.ts), so the card has to know about it
-   * or it would contradict the label the user just clicked.
+   * or it would contradict the label the user just clicked. It is a line of
+   * its own only on the card of a place the list does not have (issue #161).
    */
   name_frr?: string;
 }

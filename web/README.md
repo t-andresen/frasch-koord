@@ -319,8 +319,8 @@ coalesce(frasch:local, name:nds, name:latin, name, name:de)
 Deliberately **no `name:frr`**: outside the dialect areas that is a Frisian
 exonym or some other dialect's name, which is exactly what this view avoids.
 Inside a dialect area it is the local form, and there the injector has
-already written it into `frasch:local` wherever the name list gives no local
-name (issue #81, see `tiles/README.md`). `name:de` comes **only at the very
+already written it into `frasch:local` of every feature the name list does
+not have (issues #81 and #161, see `tiles/README.md`). `name:de` comes **only at the very
 end**, for a feature without a generic `name`. German usually arrives
 through `name:latin`/`name` anyway, but only after Low Saxon has had its turn.
 North of the border that generic name is the Danish one (Ribe, not Ripen).
@@ -358,10 +358,10 @@ OpenMapTiles schema plus our extras, injected by the `tiles/` build
   Frisian view's chain differs inside a Frisian area (see "Label chain").
 - `frasch:local` (string, only where known): the name the people of the
   place use themselves — the area dialect's name, or the `local` column of
-  `names/places.csv` where a sub-dialect differs (Fahretoft). Where the list
-  has neither, or does not have the place at all, it is OSM's `name:frr`
-  inside a dialect area (issue #81), so a feature outside our name list can
-  carry it too. Drives the local view.
+  `names/places.csv` where a sub-dialect differs (Fahretoft). A place of the
+  list has it from the list alone (issue #161); a feature the list does not
+  have carries OSM's `name:frr` as it inside a dialect area (issue #81).
+  Drives the local view.
 - `frasch:variety` (string, rare): the sub-dialect the local name belongs to,
   e.g. `Foortuftinge`. Shown by the place card; nothing in the style reads it.
 - `frasch:ref` (string, only on features from our name list): which row of
@@ -586,6 +586,9 @@ Where the data comes from (`src/names/`):
   several objects, and the entry only knows the first one's: another may lie
   in another dialect area, or in none and have no local name at all
   (issue #89). The entry's own serve a card opened from search or a link.
+  OSM's `name:frr` is the tile's too, but the card of a listed place has no
+  "Frisian (OSM)" line for it (issue #161): the list is the source of its
+  Frisian names. It only stays the headline where the label shows it.
 - `src/names/tile.ts` has the one table of which tile property is which of a
   place's names. Reading a tile feature and walking the label chain over a
   place's names both go by it.

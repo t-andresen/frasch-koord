@@ -64,10 +64,10 @@ class Tagger:
 
     def added_tags(self, key: OsmRef, own: Tags, location: LonLat | None) -> dict[str, str]:
         """The tags this object (its own tags `own`, a node's `location`)
-        gets: its row's -- or, when no row claims it, OSM's name in the
-        language of its area (`name:frr`, or `name:nds` in a Low Saxon one)
-        as its local one, with that area (#81) -- and then the curation's,
-        which win."""
+        gets: its row's, whose local name is the list's alone (#161) --
+        or, when no row claims it, OSM's name in the language of its area
+        (`name:frr`, or `name:nds` in a Low Saxon one) as its local one,
+        with that area (#81) -- and then the curation's, which win."""
         tags: dict[str, str] = {}
         claim = self._claims.row_for(key, own)
         if claim is not None:
@@ -86,8 +86,6 @@ class Tagger:
         """The tags the row claiming this object gives it (placenames.resolve)."""
         obj = self._located(claim.located_as, own, location)
         names = placenames.resolve(claim.row, obj, self._inputs.areas, self._inputs.reg)
-        if names.local_from_osm:
-            self._stats.osm_local_claimed += 1
         return placenames.as_tags(names)
 
     def _located(self, key: OsmRef, own: Tags, location: LonLat | None) -> LocatedObject | None:

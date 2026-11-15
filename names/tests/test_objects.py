@@ -58,8 +58,8 @@ def test_a_file_without_a_stamp_stops_the_reader_with_how_to_rebuild_it(tmp_path
 
 # ------------------------------------------------------------------ a point ---
 def test_a_point_is_an_object_at_its_position_with_the_facts_given() -> None:
-    assert point(8.83, 54.79, name_frr="Naibel") == {
+    assert point(8.83, 54.79, name_nds="Niböl") == {
         "lon": 8.83,
         "lat": 54.79,
-        "name_frr": "Naibel",
+        "name_nds": "Niböl",
     }

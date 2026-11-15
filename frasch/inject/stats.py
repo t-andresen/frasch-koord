@@ -53,10 +53,8 @@ class Stats:
     names: collections.Counter[str] = field(default_factory=collections.Counter)
     dialects: collections.Counter[str] = field(default_factory=collections.Counter)
     local: int = 0
-    # the objects whose local name is OSM's, in the language of their area
-    # (`name:frr`, or `name:nds` in a Low Saxon one): those rows claim
-    # (counted in `local` too), and those no row claims
-    osm_local_claimed: int = 0
+    # the objects no row claims whose local name is OSM's, in the language
+    # of their area (`name:frr`, or `name:nds` in a Low Saxon one)
     osm_local_unclaimed: int = 0
     # the references of the name list the extract has an object for
     found: set[Ref] = field(default_factory=set)
