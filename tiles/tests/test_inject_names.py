@@ -556,7 +556,8 @@ def test_the_lists_local_name_wins_over_osms_frisian_one(injected: Injected) -> 
 
 def test_an_object_of_a_row_without_a_local_name_gets_none_from_osm(injected: Injected) -> None:
     # the row has a Mooring name only, the Hallig lies in the Halligfriesisch
-    # area and OSM names it in Frisian: the list alone names its places (#161)
+    # area and OSM names it in Frisian: the local name of a place the list
+    # has is the list's alone (#161)
     _, by_key = injected
     assert "frasch:local" not in by_key[("r", HAMBURGER_HALLIG)][0]
 

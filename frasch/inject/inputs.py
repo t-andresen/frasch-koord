@@ -136,10 +136,11 @@ def scan_osm_local(
     row holds by reference (`held`): OSM's name in the language of the area
     it lies in, written with that area -- its `name:frr` in a Frisian area,
     its `name:nds` (if it has one) in a Low Saxon one.  In a Synnejysk area
-    and outside every area it has none.  An object a row holds has its
-    names from the list alone (#161).  Only `name:frr` is scanned for: an
-    object in a Low Saxon area without one keeps its `name:nds`, which labels
-    the local view anyway, the step of the label chain after `frasch:local`.
+    and outside every area it has none.  An object a row holds gets its
+    names from its row (placenames.resolve), whose local name is the list's
+    alone (#161).  Only `name:frr` is scanned for: an object in a Low Saxon
+    area without one keeps its `name:nds`, which labels the local view
+    anyway, the step of the label chain after `frasch:local`.
 
     One pass finds the objects that carry the tag, whatever they are (a
     place, a street, a station); frasch.locate then says where each lies,
