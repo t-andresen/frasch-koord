@@ -290,6 +290,20 @@ describe('the card of a clicked label of a listed place', () => {
     });
   });
 
+  // Issue #161: the list is the source of a listed place's Frisian names.
+  it("has no line of OSM's Frisian name", () => {
+    const entry = listed({ names: { 'frr-x-hallig': 'Baondiksweerw' }, name_de: 'Bandixwarf' });
+    const props = {
+      'name:frr-x-hallig': 'Baondiksweerw',
+      'name:frr': 'Baondiksweerew',
+      'name:de': 'Bandixwarf',
+    };
+
+    expect(cardModel(clicked(props, entry), LOCAL_TAG).lines).toEqual([
+      { source: inDialect('frr-x-hallig'), name: 'Baondiksweerw' },
+    ]);
+  });
+
   // A row may name several objects; its entry stands for the first of them.
   it("has the clicked object's own local name, with the dialect area that one lies in", () => {
     const entry = listed({ local: 'Nöördweerew', dialect: 'frr-x-hallig' });

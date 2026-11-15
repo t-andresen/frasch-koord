@@ -30,6 +30,8 @@ function mergedNames(entry: NameEntry, tile: CardNames): CardNames {
     local: tile.local,
     dialect: tile.dialect,
     variety: entry.variety ?? tile.variety,
+    // For the headline alone, where the clicked label shows it: the card of
+    // a listed place has no line for it (card.ts, issue #161).
     name_frr: tile.name_frr,
     // The tile's own value first: it is what the label the user just clicked
     // shows, while the entry's comes from the OSM extract the name list was
