@@ -15,11 +15,14 @@ outline hits it (Oland), a row with two objects in two areas (Nordwärw),
 and an island whose label a curation square carries, centred in another
 area than its own polygon (Strönj) -- whose village node, like Nordstrand's
 (#174), has its `place` removed, so that the island is labelled once, in
-one dialect.  And the places whose local name may be OSM's own `name:frr`
-(#81): one in an area whose row has no local name (Slütsil), one whose row
-has one (Oland), one outside every area (Kil) -- and in a Synnejysk area,
-where OSM's Frisian name is none (#83): one with a Synnejysk name (Läigem),
-one without (Loonlun).
+one dialect.  And the places OSM names in Frisian itself (`name:frr`),
+whose local name is the list's all the same (#161): one in an area whose
+row has no local name (Slütsil), one whose row has one (Oland), one outside
+every area (Kil) -- and in a Synnejysk area: one with a Synnejysk name
+(Läigem), one without (Loonlun).  The tiles keep OSM's `name:frr`, though,
+and a Frisian view labels with it the one place the list has no name
+before it in the label chain for: one outside the Frisian areas whose only
+Frisian name is its local form (Lüüm).
 
 The labels of the place card's listed scenarios come from here too: what
 the entry and the injected object of each of LISTED_SCENARIOS say is
@@ -84,6 +87,7 @@ NODES = (
         18: ((10.0, 55.05), {"place": "village", "name": "Süderlügum", "name:frr": "Läigem"}),
         19: ((10.05, 55.05), {"place": "village", "name": "Ladelund", "name:nds": "Lahnlunn"}),
         21: ((9.4, 54.5), {"place": "village", "name": "Nordstrand"}),  # Strönj's village
+        22: ((10.3, 54.2), {"place": "hamlet", "name": "Lüm", "name:frr": "Lööm"}),  # Lüüm
     }
     | SYLT_NODES
     | OLAND_NODES
@@ -192,6 +196,7 @@ ROWS = [
         "de": "Ladelund",
         "osm": "node/19",
     },
+    {"id": "luum", "kind": "settlement", "local": "Lüüm", "de": "Lüm", "osm": "node/22"},
 ]
 
 
@@ -325,7 +330,7 @@ def test_a_squares_label_is_held_to_its_entry(built: Built) -> None:
         ("olun", "frr-x-hallig", "Ualöönj"),
         ("stronj", "frr-x-hallig", "Ströön"),
         ("nordwarw", "frr-x-nordgoes", "Noordweerw"),
-        ("slutsil", "frr-x-nordgoes", "Slütsiil"),
+        ("slutsil", "frr-x-nordgoes", None),
         ("kil", None, None),
         ("laigem", "jut", "Lym"),
         ("loonlun", "jut", None),
@@ -345,11 +350,14 @@ LISTED_SCENARIOS = {
     "a listed Danish place whose German name only the list has": ("tingle", "node/7"),
     "a listed place whose object has no generic OSM name": ("listlai", "node/8"),
     "a listed place with only OSM’s German name and no generic OSM name": ("satj", "node/9"),
-    # #81: the row has no name in the dialect of its area, so the local name
-    # is OSM's `name:frr`, ahead of another dialect's
-    "a listed place whose local name is OSM’s Frisian one": ("hamborjer-hali", "node/13"),
-    # the entry stands for the row's first object, on the Hallig, whose local
-    # name is OSM's; the clicked one lies in another dialect area
+    # #161: the row has no name in the dialect of its area, and OSM's
+    # `name:frr` is no local name of a place the list has
+    "a listed place without a local name that OSM names in Frisian": ("hamborjer-hali", "node/13"),
+    # #161: the tiles keep OSM's `name:frr`, and outside the Frisian areas
+    # it comes before the local name in the label chain of a Frisian view
+    "a listed place a Frisian view labels with OSM’s Frisian name": ("luum", "node/22"),
+    # the entry stands for the row's first object, on the Hallig, which has
+    # no local name; the clicked one lies in another dialect area
     "the second object of a listed row, in another dialect area": ("noordweerw", "node/17"),
     # #89: the entry's object has a local name, the clicked one, outside
     # every dialect area, has none

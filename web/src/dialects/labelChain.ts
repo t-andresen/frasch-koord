@@ -33,8 +33,8 @@ import { LOCAL_TAG } from './views.ts';
  *    the local majority language. Deliberately no `name:frr` (outside the
  *    dialect areas that is a Frisian exonym or some other dialect's name,
  *    which is exactly what this view avoids; inside a Frisian area the tile
- *    build has already written it into `frasch:local` where the name list
- *    gives no local name, issue #81), and
+ *    build has already written it into `frasch:local` of a place the name
+ *    list does not have, issues #81 and #161), and
  *    `name:de` only as the very last resort, for a feature without a generic
  *    `name` (issue #32): German comes in via `name:latin`/`name` anyway, but
  *    only after Low Saxon has had its turn.

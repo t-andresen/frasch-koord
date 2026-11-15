@@ -136,11 +136,11 @@ and frontend must agree on it. The injector writes its result as tags
   variety of the area the place lies in — `local`; for Low Saxon, else OSM's
   own `name:nds` of the object (as the tiles keep it, `names.nds` of the
   search index is the one Low Saxon name)
-* **the local name** = `local`, else the name in the variety of the area,
-  else OSM's own name of the object in the language of the area, inside an
-  area only: `name:frr` in a Frisian area, `name:nds` in a Low Saxon one, none
-  in a Synnejysk one — OSM has no `name:jut`, and its Frisian name is an
-  exonym there (see *OSM's Frisian names* in `tiles/README.md`)
+* **the local name** = `local`, else the list's name in the variety of the
+  area. The list's alone: OSM's names are no fallback for a place the list
+  has (#161). Only an object no row claims takes OSM's own name in the
+  language of its area as its local name (see *OSM's Frisian names* in
+  `tiles/README.md`)
 * **the variety** = the bracket remark on the primary `local` variant
 
 ## Dialect areas — `dialect_areas.csv` → `dialect_areas.geojson`
@@ -479,7 +479,7 @@ row on the map its point (a node's location; a point *inside* the polygon of
 a way or relation that closes into one; else the relation's `label` /
 `admin_centre` member, else its first vertex the extract holds), the outline
 point as a second try for the dialect lookup, the `admin_level` of an
-administrative boundary, and OSM's `name:nds`, `name` and `name:frr`. It is
+administrative boundary, and OSM's `name:nds` and `name`. It is
 stamped with the extracts it was read from. The injector and the search index both read
 it, and both ask `dialect_areas.dialect_at` which dialect an object lies in — so a
 label and its search entry cannot disagree. An administrative area above

@@ -111,38 +111,18 @@ def test_there_is_no_local_name_where_the_areas_dialect_has_none() -> None:
     assert resolve(IN_SOLRING, muasem).local == ""
 
 
-def test_osms_frisian_name_is_the_local_name_of_a_place_the_list_gives_none() -> None:
-    # inside a dialect area it is almost always the form the place itself uses (#81)
-    muasem = row(kind="settlement", mooring="Muasem", de="Morsum")
-    assert resolve(IN_SOLRING | {"name_frr": "Muasem"}, muasem).local == "Muasem"
-
-
-def test_outside_every_area_osms_frisian_name_is_an_exonym_and_no_local_name() -> None:
-    pinneberg = row(kind="settlement", mooring="Pinebärj", de="Pinneberg")
-    assert resolve(OUTSIDE | {"name_frr": "Pinebärj"}, pinneberg).local == ""
-
-
-def test_the_lists_local_name_wins_over_osms_frisian_name() -> None:
-    assert resolve(IN_HALLIG | {"name_frr": "Hanswarf"}, HANSWARFT).local == "Hansweerf"
-
-
-def test_a_local_name_taken_from_osm_is_marked_as_such() -> None:
-    muasem = row(kind="settlement", mooring="Muasem", de="Morsum")
-    assert resolve(IN_SOLRING | {"name_frr": "Muasem"}, muasem).local_from_osm
-
-
-def test_a_local_name_of_the_list_is_not_marked_as_osms() -> None:
-    assert not resolve(IN_HALLIG | {"name_frr": "Hanswarf"}, HANSWARFT).local_from_osm
-
-
 def test_an_object_no_row_claims_has_osms_frisian_name_as_its_local_name() -> None:
     # a Warft, a street, a station inside a dialect area (#81), with the
     # area, which the label chain of a Frisian view asks for
-    kirchwarft: LocatedObject = IN_HALLIG | {"name_frr": "Schörkeweerw"}
-    assert placenames.unclaimed_tags(kirchwarft, AREAS, REGISTRY) == {
+    assert placenames.unclaimed_tags(IN_HALLIG, "Schörkeweerw", AREAS, REGISTRY) == {
         "frasch:local": "Schörkeweerw",
         "frasch:dialect": "frr-x-hallig",
     }
+
+
+def test_outside_every_area_osms_frisian_name_is_an_exonym_and_no_local_name() -> None:
+    # Frisian was never spoken in Pinneberg
+    assert placenames.unclaimed_tags(OUTSIDE, "Pinebärj", AREAS, REGISTRY) == {}
 
 
 # Süderlügum: a Mooring name, and the Synnejysk one its people use
@@ -153,20 +133,23 @@ def test_in_a_synnejysk_area_the_local_name_is_the_synnejysk_one() -> None:
     assert resolve(IN_JUT, LAIGEM).local == "Lym"
 
 
-def test_in_a_synnejysk_area_osms_frisian_name_is_no_local_name() -> None:
-    # OSM has no Synnejysk names, and its Frisian one is an exonym there
-    laigem = LAIGEM | {"jut": ""}
-    assert resolve(IN_JUT | {"name_frr": "Läigem"}, laigem).local == ""
-
-
 def test_in_a_synnejysk_area_an_object_no_row_claims_has_no_local_name_from_osm() -> None:
-    street: LocatedObject = IN_JUT | {"name_frr": "Bänstrin"}
-    assert placenames.unclaimed_tags(street, AREAS, REGISTRY) == {}
+    # OSM has no Synnejysk names, and its Frisian one is an exonym there
+    assert placenames.unclaimed_tags(IN_JUT, "Bänstrin", AREAS, REGISTRY) == {}
 
 
-def test_in_a_low_saxon_area_osms_low_saxon_name_is_the_local_name() -> None:
+def test_in_a_low_saxon_area_an_object_no_row_claims_has_osms_low_saxon_name() -> None:
+    street: LocatedObject = IN_NDS | {"name_nds": "Diekstraat"}
+    assert placenames.unclaimed_tags(street, "Dikstroote", AREAS, REGISTRY) == {
+        "frasch:local": "Diekstraat",
+        "frasch:dialect": "nds",
+    }
+
+
+def test_osms_name_in_the_language_of_the_area_is_no_local_name_of_a_listed_place() -> None:
+    # the list alone says what a place it has is called locally (#161)
     gaarding = row(kind="settlement", mooring="Gaarding", de="Garding")
-    assert resolve(IN_NDS | {"name_nds": "Garn"}, gaarding).local == "Garn"
+    assert resolve(IN_NDS | {"name_nds": "Garn"}, gaarding).local == ""
 
 
 def test_osms_low_saxon_name_is_the_low_saxon_name_of_a_place_the_list_gives_none() -> None:

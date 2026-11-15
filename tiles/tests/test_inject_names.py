@@ -461,7 +461,6 @@ def test_matched_relation_gets_the_smallest_area_and_its_curation(injected: Inje
         "name:de": "Hamburger Hallig",
         "frasch:kind": "hallig",
         "frasch:dialect": "frr-x-hallig",
-        "frasch:local": "Hamborjer Hali",
         "frasch:ref": "hamborjer-hali",
         "place": "island",
         "frasch:minzoom": "12",
@@ -555,10 +554,11 @@ def test_the_lists_local_name_wins_over_osms_frisian_one(injected: Injected) -> 
     assert by_key[("w", NORDWARFT)][0]["frasch:local"] == "Noordweerw"
 
 
-def test_a_row_without_a_local_name_gets_osms_frisian_one(injected: Injected) -> None:
-    # the row has a Mooring name only, the Hallig lies in the Halligfriesisch area
+def test_an_object_of_a_row_without_a_local_name_gets_none_from_osm(injected: Injected) -> None:
+    # the row has a Mooring name only, the Hallig lies in the Halligfriesisch
+    # area and OSM names it in Frisian: the list alone names its places (#161)
     _, by_key = injected
-    assert by_key[("r", HAMBURGER_HALLIG)][0]["frasch:local"] == "Hamborjer Hali"
+    assert "frasch:local" not in by_key[("r", HAMBURGER_HALLIG)][0]
 
 
 def new_objects(
@@ -808,13 +808,8 @@ def test_the_tagged_objects_are_counted_per_dialect(stats: Stats) -> None:
 
 
 def test_the_local_forms_rows_give_are_counted(stats: Stats) -> None:
-    # the Nordwarft, the Hamburger Hallig, Oland, Westerheide
-    assert stats.local == 4
-
-
-def test_the_local_forms_rows_take_from_osms_frisian_name_are_counted(stats: Stats) -> None:
-    # the Hamburger Hallig
-    assert stats.osm_local_claimed == 1
+    # the Nordwarft, Oland, Westerheide
+    assert stats.local == 3
 
 
 def test_osms_frisian_names_on_objects_no_row_claims_are_counted(stats: Stats) -> None:
@@ -1082,29 +1077,6 @@ def test_the_member_ways_of_a_matched_waterway_relation_are_found(tmp_path: Path
     }
 
 
-def test_a_member_way_inherits_the_frisian_name_of_its_waterway_relation(tmp_path: Path) -> None:
-    # the row has a Mooring name only; the river starts in the Nordergoesharde
-    # box of AREAS, so OSM's name:frr of the relation is the local name (#81)
-    arlau = dict(id="arlou", kind="water", mooring="Arlou", de="Arlau", osm="relation/20")
-    (tmp_path / "places.csv").write_text(places_text([arlau]), encoding="utf-8")
-    (tmp_path / "areas.geojson").write_text(json.dumps(AREAS), encoding="utf-8")
-    write_extract(
-        tmp_path / "in.osm.pbf",
-        nodes={1: ((8.80, 54.66), {}), 2: ((8.82, 54.66), {})},
-        ways={10: ([1, 2], {"waterway": "river", "name": "Arlau"})},
-        relations={
-            20: (
-                [("w", 10, "main_stream")],
-                {"type": "waterway", "name": "Arlau", "name:frr": "Arluu"},
-            )
-        },
-    )
-    curation_file(tmp_path)
-    inject(tmp_path)
-    tags = {(o[0], o[1]): o[2] for o in read_extract(tmp_path / "out.osm.pbf")}
-    assert tags[("w", 10)]["frasch:local"] == "Arluu"
-
-
 # --------------------------------------------------------- QID carriers ---
 # a QID reaches more than the row's own object: the place node next to a
 # matched boundary, the offshore sea node -- and, mis-tagged in OSM, a shop
@@ -1155,9 +1127,9 @@ def test_a_qid_counts_as_present_whatever_matched_its_carrier(tmp_path: Path) ->
     assert inject(tmp_path, dry_run=True).stats.present_qids == {"Q559369"}
 
 
-def test_a_node_found_by_its_qid_is_asked_for_its_own_frisian_name(tmp_path: Path) -> None:
-    # no reference, so the objects file does not know it: like its dialect,
-    # its Frisian name is the node's own
+def test_a_node_found_by_its_qid_gets_no_local_name_from_osm(tmp_path: Path) -> None:
+    # no row holds it by reference, but one claims it: OSM's Frisian name is
+    # the local one of an object no row claims only (#161)
     hulm = dict(id="hulm", kind="settlement", mooring="Hulm", de="Holm", wikidata="Q559369")
     (tmp_path / "places.csv").write_text(places_text([hulm]), encoding="utf-8")
     (tmp_path / "areas.geojson").write_text(json.dumps(AREAS), encoding="utf-8")
@@ -1166,7 +1138,7 @@ def test_a_node_found_by_its_qid_is_asked_for_its_own_frisian_name(tmp_path: Pat
     write_extract(tmp_path / "in.osm.pbf", nodes={1: ((8.85, 54.66), holm)})
     inject(tmp_path)
     ((_, _, tags, _),) = read_extract(tmp_path / "out.osm.pbf")
-    assert tags["frasch:local"] == "Hoolm"
+    assert "frasch:local" not in tags
 
 
 @pytest.mark.parametrize(

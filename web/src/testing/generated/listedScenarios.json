@@ -62,7 +62,7 @@
       "frasch:kind": "settlement"
     }
   },
-  "a listed place whose local name is OSM’s Frisian one": {
+  "a listed place without a local name that OSM names in Frisian": {
     "entry": {
       "id": "hamborjer-hali",
       "names": {
@@ -72,7 +72,6 @@
       "lon": 9.15,
       "lat": 54.42,
       "kind": "hallig",
-      "local": "Hamborjer Hali",
       "dialect": "frr-x-nordgoes",
       "name_osm": "Hamburger Hallig",
       "osm": "node/13"
@@ -84,8 +83,28 @@
       "frasch:ref": "hamborjer-hali",
       "frasch:kind": "hallig",
       "name:de": "Hamburger Hallig",
-      "frasch:dialect": "frr-x-nordgoes",
-      "frasch:local": "Hamborjer Hali"
+      "frasch:dialect": "frr-x-nordgoes"
+    }
+  },
+  "a listed place a Frisian view labels with OSM’s Frisian name": {
+    "entry": {
+      "id": "luum",
+      "names": {},
+      "name_de": "Lüm",
+      "lon": 10.3,
+      "lat": 54.2,
+      "kind": "settlement",
+      "local": "Lüüm",
+      "name_osm": "Lüm",
+      "osm": "node/22"
+    },
+    "props": {
+      "name": "Lüm",
+      "name:frr": "Lööm",
+      "frasch:ref": "luum",
+      "frasch:kind": "settlement",
+      "name:de": "Lüm",
+      "frasch:local": "Lüüm"
     }
   },
   "the second object of a listed row, in another dialect area": {
@@ -99,7 +118,6 @@
       "lon": 9.4,
       "lat": 54.42,
       "kind": "warft",
-      "local": "Nöördweerew",
       "dialect": "frr-x-hallig",
       "name_osm": "Nordwarft",
       "osm": "node/16; node/17"

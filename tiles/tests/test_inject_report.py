@@ -267,13 +267,6 @@ def test_the_names_are_listed_per_dialect_in_registry_order_with_its_label() -> 
     ]
 
 
-def test_the_local_forms_line_says_how_many_are_osms_frisian_name() -> None:
-    lines = result_lines(Stats(local=3, osm_local_claimed=1), EMPTY, EXTRACT, 0)
-    assert [line for line in lines if line.startswith("  frasch:local")] == [
-        "  frasch:local             3  local form (1 of them OSM's name:frr or name:nds)"
-    ]
-
-
 def test_osms_frisian_names_on_objects_no_row_claims_get_a_line_of_their_own() -> None:
     lines = result_lines(Stats(osm_local_unclaimed=2), EMPTY, EXTRACT, 0)
     assert [line for line in lines if line.startswith("  frasch:local")] == [

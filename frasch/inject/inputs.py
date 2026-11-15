@@ -136,18 +136,20 @@ def scan_osm_local(
     row holds by reference (`held`): OSM's name in the language of the area
     it lies in, written with that area -- its `name:frr` in a Frisian area,
     its `name:nds` (if it has one) in a Low Saxon one.  In a Synnejysk area
-    and outside every area it has none.  An object a row holds has its names
-    in the objects file.  Only `name:frr` is scanned for: an object in a Low
-    Saxon area without one keeps its `name:nds`, which labels the local view
-    anyway, the step of the label chain after `frasch:local`.
+    and outside every area it has none.  An object a row holds has its
+    names from the list alone (#161).  Only `name:frr` is scanned for: an
+    object in a Low Saxon area without one keeps its `name:nds`, which labels
+    the local view anyway, the step of the label chain after `frasch:local`.
 
     One pass finds the objects that carry the tag, whatever they are (a
     place, a street, a station); frasch.locate then says where each lies,
     as it does for the objects of the name list: a node at its own location,
     a way or relation inside its polygon, else at its outline point."""
-    named = set(osmscan.tagged(extract, FRISIAN_KEY)) - set(held)
+    frisian = {
+        ref: name for ref, name in osmscan.tagged(extract, FRISIAN_KEY).items() if ref not in held
+    }
     local = {
-        ref: placenames.unclaimed_tags(obj, areas, reg)
-        for ref, obj in locate.locate_in(extract, named).items()
+        ref: placenames.unclaimed_tags(obj, frisian[ref], areas, reg)
+        for ref, obj in locate.locate_in(extract, frisian.keys()).items()
     }
     return {ref: tags for ref, tags in local.items() if tags}
