@@ -108,7 +108,8 @@ Sölring, Öömrang, Halunder and Hålifrasch names. They are now first-class.
    - dialect view for tag T: `coalesce(name:T, frasch:local, name:frr, name:nds, name:de, name:latin, name)`
    - local view (`frr-x-local`): `coalesce(frasch:local, name:nds, name:latin, name, name:de)` — deliberately **no** `name:frr` and `name:de` only as the very last resort: where the Frisian name is unknown the honest local label is the Low Saxon one, not a Hochdeutsch one or another dialect's name. (Revised 2026-10-01, #32: `name:de` was not in the chain at all, which left a feature with only a German name unlabelled. It now comes after OSM's own `name`, so it only matters where a feature has no `name`. The card and search take the generic `name` from OSM too, as `name_osm` in names.json, and no longer treat it as German. North of the border it is Danish. Since 2026-10-03, #81: inside a dialect
      area the injector writes OSM's `name:frr` into `frasch:local` where the
-     list gives no local name, see below. The chain itself is unchanged.)
+     list gives no local name, see below. The chain itself is unchanged.
+     Since 2026-11-15, #161: only for a place the list does not have.)
 7. **UI**: one dropdown. Every option carries a UI language; only registry
    entries with `view=yes` are selectable (today only Mooring — a dialect
    becomes selectable when its UI translation exists). The local view uses
@@ -589,8 +590,10 @@ always the local form. Owner's choices:
 - **Every object**, not only places: streets, stations and offices with a
   `name:frr` inside an area get the Frisian label too. One rule, no class
   list to maintain.
-- **Listed objects too**: a row's own local name wins, but where the list
-  gives none, OSM's `name:frr` is it. Otherwise adding a place to
+- **Listed objects too** *(revised 2026-11-15, #161: no longer. A place the
+  list has takes its Frisian names from the list alone, see the entry of
+  that date. `osm_objects.json` has no `name_frr` any more.)*: a row's own
+  local name wins, but where the list gives none, OSM's `name:frr` is it. Otherwise adding a place to
   `places.csv` with only a Mooring name would take its Frisian label away.
   `osm_objects.json` records `name_frr` for this, and `names.json`'s `local`
   follows the same rule (`dialects.osm_local_name`), so map, card and search
@@ -1853,7 +1856,8 @@ like the Frisian ones. The spec is the issue and its comments. What it settled:
 - **OSM's fallback for the local name follows the area's language**:
   `name:frr` in a Frisian area, `name:nds` in a Low Saxon one, nothing in a
   Synnejysk one (OSM has no `name:jut`). So OSM's Frisian exonym never becomes
-  the local name of a Synnejysk place.
+  the local name of a Synnejysk place. *(Since 2026-11-15, #161: a fallback
+  for objects no row claims only.)*
 - **The ranking in the Frisian views**: the local name comes right after the
   view's own dialect only in a Frisian area. Anywhere else it comes after every
   Frisian name and `name:frr`, before `name:nds`. A Synnejysk or Low Saxon
@@ -1984,3 +1988,47 @@ hand-over.
   its neighbourhood node's `place` is removed.
 - **Ååsterdik is split** (#187): the Wiedingharde row is unmatched, and
   Nordstrand's Osterdeich has a `settlement` row of its own.
+
+## Decided 2026-11-15: a listed place takes its Frisian names from the list alone (issue #161)
+
+Revises the "Listed objects too" point of 2026-10-03 (#81). For a place the
+name list has, the list is the source of truth, but OSM's `name:frr` (no
+stated dialect) still showed for it in two ways: as an extra "Frisian (OSM)"
+line on the card of a clicked label wherever it differed from every list name
+(Bandixwarf: *Baondiksweerw* from the list and *Baondiksweerew* from OSM; 78
+objects), and as the local name where the list gave none (Husum → *Hüsem*;
+17 objects of 16 rows). Both go. The names that disappear are listed in #196
+for review.
+
+- **The local name of an object a row claims is the list's alone**: `local`,
+  else the list's name in the variety of the area (`placenames.resolve`).
+  OSM's name is no fallback, in a Frisian and in a Low Saxon area alike. So
+  `frasch:local` in the tiles and `local` in `names.json` are no longer set
+  from OSM for listed places, and the inject report's count of them is gone.
+  Claimed means by reference, through the row's QID or as a member way of
+  its waterway relation.
+- **The card of a listed place has no "Frisian (OSM)" line**, done in the
+  card (`names/card.ts`), not in the tiles: they keep `name:frr`.
+- **The headline still follows the label** (owner's choice over ignoring the
+  tile's `name:frr` altogether). The label chain of a Frisian view still has
+  `name:frr`, and a listed place always has a Frisian name in the list
+  (`placelist.on_map`), which comes before it, with one exception: outside
+  the Frisian areas `frasch:local` comes after `name:frr`, so a place there
+  whose only Frisian name is its `local` form is labelled with OSM's. No
+  such row exists (#197). The card then shows what the label shows, as
+  everywhere (`mapCardConsistency`, the scenario *Lüüm*).
+- **`name_frr` is gone from `names/osm_objects.json`** (owner's choice over
+  leaving a field nothing reads): `frasch.locate` no longer records it. The
+  injector's pre-pass over the extract, which gives the objects no row
+  claims their local name, takes `name:frr` from its own tag scan.
+- **Unchanged**: places the list does not have (the card line, and OSM's
+  `name:frr` as the local name inside a dialect area, #81); the labels of
+  the Frisian views; Low Saxon as a name (`names.nds` is the list's, else
+  OSM's `name:nds`). In the Low Saxon area the local name of a listed place
+  no longer falls back to OSM either, but its label is the same string:
+  `name:nds` is the next step of the chain.
+
+Visible effect: the 16 rows of #196 (table 1) have no local name until one is
+added to the list. The local view labels them in Low Saxon or German, in the
+Frisian views nothing changes. In the tiles it takes effect with the next
+tile build; the committed search index is rebuilt.
