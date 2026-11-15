@@ -64,10 +64,10 @@ class Tagger:
 
     def added_tags(self, key: OsmRef, own: Tags, location: LonLat | None) -> dict[str, str]:
         """The tags this object (its own tags `own`, a node's `location`)
-        gets: its row's, and nothing of OSM's (#161) -- or, when no row
-        claims it, OSM's name in the language of its area (`name:frr`, or
-        `name:nds` in a Low Saxon one) as its local one, with that area
-        (#81) -- and then the curation's, which win."""
+        gets: its row's, whose local name is the list's alone (#161) --
+        or, when no row claims it, OSM's name in the language of its area
+        (`name:frr`, or `name:nds` in a Low Saxon one) as its local one,
+        with that area (#81) -- and then the curation's, which win."""
         tags: dict[str, str] = {}
         claim = self._claims.row_for(key, own)
         if claim is not None:
