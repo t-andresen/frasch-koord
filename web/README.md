@@ -208,10 +208,9 @@ then reads TileJSON straight out of the archive itself.
 - `src/map/style/frasch-bright.json` **is our style**, edited directly. It
   started as a fork of upstream OSM Bright
   ([openmaptiles/osm-bright-gl-style](https://github.com/openmaptiles/osm-bright-gl-style),
-  `openmaptiles:version` "3.x", downloaded as-is on 2026-09-15 — see
-  `docs/project-decisions.md`) and was renamed from `osm-bright.json` on
-  2026-09-15, when the `place`-layer label group was restructured for
-  Frisian place kinds (see "Label classes" below). Since then it has lost
+  `openmaptiles:version` "3.x", downloaded as-is on 2026-09-15) and was
+  renamed from `osm-bright.json` on 2026-09-15, when the `place`-layer
+  label group was restructured for Frisian place kinds (see "Label classes" below). Since then it has lost
   what upstream needed and we do not (issue #112): the Mapbox Studio
   metadata, the camera, and the source URL, sprite and glyphs, which named
   MapTiler and GitHub Pages; the file names no URL. Municipal boundaries

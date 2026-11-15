@@ -1,2034 +1,465 @@
-# frasch-maps: Decisions & Open Questions
-
-Handoff document summarizing the planning discussion (2026-09-14) and the state after the first build day (2026-09-15). Code: `names/` (pipeline), `tiles/` (build), `web/` (frontend).
-
-## Goal
-
-A Google-Maps-like web map with all labels and UI in **North Frisian**, based on the **OpenMapTiles** vector tile schema.
-
-## Decided
-
-### Language & dialects
-- **Initial dialect: Mooring** ("frasch").
-- Other dialects (Fering, Öömrang, Sölring, …) will be added later → **everything must be dialect-aware from day one**:
-  per-dialect name fields in tiles and data (e.g. `name:frr-x-mooring`, `name:frr-x-fering`), and per-dialect UI translation files.
-- Language tags: ISO 639-3 `frr` plus a private-use subtag per dialect (`frr-x-mooring`), since no registered BCP 47 dialect subtags exist.
-- Label fallback order (to be finalized in the style): dialect name → other frr name → `name:de` → `name`.
-
-### Map area
-- **Phase 1:** North Frisia.
-- **Later:** country names and larger cities worldwide; detailed (low-level) Frisian names only for **Germany, Denmark and the Netherlands**.
-- Name coverage and tile extent are independent: tiles may cover more area than the name list, falling back to German/local names.
-
-### Name data
-- **Source of truth: a name list kept in git**, merged into the tiles at **build time** (option "A").
-- Rejected as the primary strategy: upstreaming to OSM `name:frr`. OSM has only a single `frr` field with no dialect distinction, so a custom mechanism is needed anyway. (Contributing names to OSM can still happen separately; that requires OSM import-guideline discussion and an ODbL-compatible license.)
-- Rejected: swapping labels in the browser. Big lookup expressions are slow, and OSM IDs aren't reliably present in OpenMapTiles output.
-- Editing workflow: CSV/pull requests in git for now; a contributor-friendly editing UI may come later.
-
-### Tech stack
-| Layer | Decision | Notes |
-|---|---|---|
-| Tiles | **Vector tiles, OpenMapTiles schema** | Vector allows switching dialect in the browser without separate tile sets. Schema keeps compatibility with existing OMT styles. |
-| Tile hosting | **PMTiles** (single static file on object storage/CDN) | Low lock-in: `pmtiles convert` converts between PMTiles and MBTiles, and `martin` can serve either. Keep the tile URL in config, since it's the only place the frontend depends on it. |
-| Map renderer | **MapLibre GL JS** | Smooth zoom and rotation like Google Maps; native OMT styles. |
-| Frontend | **React + Vite** (TypeScript) | Candidate: `react-map-gl` (supports MapLibre); `pmtiles` protocol plugin. |
-| Search (v1) | **In-browser index** (e.g. MiniSearch/FlexSearch over a JSON file of names) | No backend. Move to Photon or Pelias when the area grows or address search is needed. |
-| Routing | **Postponed until v1 is running** | Candidates: Valhalla (good ferry handling, relevant for islands/Halligen), OSRM, GraphHopper. Each needs North Frisian instruction translations. |
-| UI i18n | i18n library (e.g. `i18next`), one file per dialect | |
-
-## Decided 2026-09-15 (after the first working build)
-
-### Tile build tool: Planetiler (verified)
-- Stock Planetiler jar, **no fork**. The Mooring names are merged by a pre-processing step (`tiles/inject_names.py`, pyosmium) that adds `name:frr-x-mooring` tags to the OSM extract; Planetiler is then run with `--languages=de,da,nds,frr,frr-x-mooring`. Verified: the hyphenated tag appears in the output tiles on nodes and relations (Niebüll → Naibel, Föhr → Fäär, Flensburg → Flansborj).
-- Because the merge happens in the PBF, the name list is independent of the tile tool (would also work with imposm/PostGIS).
-- Timings on the dev machine (12 cores, 3 GB heap): Schleswig-Holstein 2.5 min (plus ~5 min one-time download of Natural Earth/water polygons, 1.4 GB; pinned since issue #28); output 129 MB PMTiles.
-- Finding: OSM already has ~510 objects with `name:frr` in Schleswig-Holstein, but they mix dialects (Sölring "Kairem", Mooring "Doogebel-Huuwen", even Kiel → "Kil"). This confirms: dialect tag first, `name:frr` only as fallback.
-- Build entry point: `tiles/build.sh <region>`.
-
-### Worldwide tiles: one planet build
-Requirement: **the map must never be blank anywhere**. Therefore: one full planet build (OpenMapTiles schema, ~100 GB PMTiles) as the single style source. Not the "world to z7 + detail region" split (the map would be blank outside the detail region past z7, or show duplicate labels). The planet does not fit on the dev machine (WSL has 8 GB of 16 GB RAM) → build once on a rented VM (≥64 GB RAM, ~1 TB SSD, a few hours, a few euros), upload to object storage. Phase-1 development uses the Schleswig-Holstein extract (and Denmark for name matching).
-
-### Name data
-- The list is the owner's own work. It was bootstrapped from a Google Sheet (export kept in `names/bootstrap/`; the one-time importer was removed on 2026-09-25 and is in git history), but **`names/places.csv` is the single source of truth** since 2026-09-15: a slim hand-edited CSV (kind, mooring, older, other, de, hint, da, osm, wikidata, status, note — `other` dissolved into per-dialect columns on 2026-09-16, see below; the sheet's inhabitant/nds/source columns were dropped on purpose). The sheet is not consulted any more. The published list is under ODbL 1.0 (decided 2026-09-19, see below).
-- The sheet was richer than assumed: columns Mooring, older Mooring names, inhabitant adjectives, German, Low German, Danish, South Jutlandic, old names, source; 10 sections (towns, Köge, Harden, islands/Halligen, Warften, landscapes, waters, roads, older designations, countries, Helgoland). Only the map-relevant columns were imported into `places.csv`; the rest stays in the archived export. The pipeline lives in `names/` (see `names/README.md`).
-
-### Smaller points
-- Base style: **OSM Bright**, labels rewritten to `coalesce(name:<dialect>, name:frr, name:de, name)`.
-- Fonts: Mooring only needs Latin with diacritics → standard Noto Sans glyphs, self-hosted under `web/public/fonts`.
-- Hosting (proposed): Cloudflare R2 for the PMTiles (range requests, no egress fees) + static site on Cloudflare Pages or GitHub Pages.
-- Code license: MIT (decided 2026-09-26, see below).
-- Frontend: plain `maplibre-gl` (no react-map-gl), `pmtiles` protocol, MiniSearch, i18next. UI strings: German placeholders; Mooring strings pending (not to be invented by tooling).
-
-### Map curation mechanism (2026-09-15, verified)
-Three levels of map changes, all without forking Planetiler:
-1. **Tag fixes before the build** (`names/curation.csv`, applied by `tiles/inject_names.py`): per OSM id, `set_tags` such as `place=island` change how OpenMapTiles classifies a feature. Needed because OMT drops `place=islet` polygons entirely (Habel, Norderoog, Südfall had no label at any zoom) and Nordstrand has no island polygon in OSM.
-2. **Own tile attributes**: Planetiler's `--extra_name_tags=frasch:kind,frasch:minzoom,frasch:maxzoom` copies arbitrary tags into the tiles. The injector writes `frasch:kind` (the sheet's own classification: island / hallig / sand / warft / koog / …) and `frasch:minzoom` (per-feature curation, e.g. Tilli and Tammensiel not before Dagebüll at z10; Süderoogsand together with Norderoogsand at z9). The style enforces `frasch:minzoom` with a zoom filter and styles/prioritises labels by `frasch:kind`.
-3. **Style** (`web/src/map/style/frasch-bright.json`, forked from OSM Bright): label layers per kind (`place-island`, `place-hallig`, `place-sand` from z10, `place-warft` from z13, …). Priority islands > Halligen > towns/villages > sands > hamlets > Warften. Important MapLibre detail: label collision is resolved in reverse layer order (the LAST symbol layer in the style wins), `symbol-sort-key` only orders within one layer — so the priority is expressed by the physical layer order, low-priority layers first.
-
-Resolved with this mechanism (2026-09-15): Habel/Norderoog/Südfall labelled (islet → island); Nordstrand styled and timed like Pellworm (municipality relation gets `place=island`, village node held to z12; revised 2026-09-16: the relation's label sat 2 km from the village and stayed on next to the village label, so the injector now adds a synthetic 50 km² `place=island` square centred on the village node via curation's `polygon_km2`; it carries the island label from z8 at the village's position and `frasch:maxzoom=11` hands over to the village label at z12 — see `names/README.md`; revised 2026-11-03, #174: no hand-over any more, the square labels e Strönj at every zoom, the village node's `place` is removed and Nordstrand's parts show as hamlets beneath it); Süderoogsand and Norderoogsand both from z10 as sands; Tilli/Tammensiel not before Dagebüll (z10) and never over the island name. Second round: sands labelled whenever there is room (their OSM class is `island`, the filter had excluded it); smallest Halligen (OMT rank 6, e.g. Habel) wait until z12 by style rule; Hamburger Hallig via its admin_level=10 relation (z12); all Warften share one layer from z13 — Hallig Warften are `place=hamlet` in OSM and are recognised by name (*warf*, *weerw*, *wäärw*).
-
-Language chain in labels: `name:frr-x-mooring` → `name:frr` → `name:nds` → `name:de` → `name:latin` → `name` (revised 2026-09-16, see below: `frasch:local` now comes second, and the local view has a chain of its own). Planned: outside Germany drop `name:de` and use `name:en` (two symbol layers with a `within`-Germany filter).
-
-## Decided 2026-09-16: multi-dialect model and the local-dialect view
-
-North Frisian is a dozen varieties, and the sheet's `other` column already held
-Sölring, Öömrang, Halunder and Hålifrasch names. They are now first-class.
-
-1. **One row per place, one column per dialect** in `names/places.csv`. The
-   catch-all `other` column is dissolved (one-off
-   `names/bootstrap/migrate_dialect_columns.py`, since removed; what it could not sort sits in
-   `note` as `unsorted other-dialect name: …`).
-2. **A `local` column** holds the form the people of the place itself use where
-   it differs from the dialect of the area around it (sub-dialects such as
-   Fahretoft). Empty = same as the area's dialect. Its bracket remark names the
-   variety: `Brouersweerw (Foortuftinge)`.
-3. **`names/dialects.csv` is the dialect registry** — the single list. The
-   place-list columns, the injected `name:*` tags, Planetiler's `--languages`,
-   the search index and the frontend's selector all derive from it. Adding a
-   dialect is one line plus a column, no code change. Language tags stay
-   `frr-x-<subtag>` (BCP 47 private use, at most 8 characters per subtag).
-4. **Dialect areas**: `names/dialect_areas.csv` names the OSM municipalities and
-   island polygons of each dialect; `names/build_dialect_areas.py` turns them
-   into the committed `names/dialect_areas.geojson`. Injector and search
-   exporter do point-in-polygon against it, **smallest area wins** (Hamburger
-   Hallig lies inside Reußenköge). Positions come from id-filtered pre-passes,
-   not from a location cache — the dev machine has 5 GB.
-   (Since 2026-10-13, #101: what is known is only that the passes take
-   neither a location cache for the whole extract nor area assembly; what
-   such a cache would cost in memory was never measured, and
-   `build_candidates` builds one. See the entry of that date.)
-5. **Tile attributes** per matched object: `name:<tag>` for every dialect with a
-   name, `frasch:kind` (unchanged), `frasch:dialect` (the area's dialect),
-   `frasch:local` (the local name), `frasch:variety` (the variety's name).
-   (Since 2026-10-01 also `name:de` from the list's `de`, see below.)
-6. **Label chains** (Phase 1 = Schleswig-Holstein tiles, so Low Saxon is always
-   the local majority language; a northern-Germany `within` polygon comes with
-   the planet build):
-   - dialect view for tag T: `coalesce(name:T, frasch:local, name:frr, name:nds, name:de, name:latin, name)`
-   - local view (`frr-x-local`): `coalesce(frasch:local, name:nds, name:latin, name, name:de)` — deliberately **no** `name:frr` and `name:de` only as the very last resort: where the Frisian name is unknown the honest local label is the Low Saxon one, not a Hochdeutsch one or another dialect's name. (Revised 2026-10-01, #32: `name:de` was not in the chain at all, which left a feature with only a German name unlabelled. It now comes after OSM's own `name`, so it only matters where a feature has no `name`. The card and search take the generic `name` from OSM too, as `name_osm` in names.json, and no longer treat it as German. North of the border it is Danish. Since 2026-10-03, #81: inside a dialect
-     area the injector writes OSM's `name:frr` into `frasch:local` where the
-     list gives no local name, see below. The chain itself is unchanged.
-     Since 2026-11-15, #161: only for a place the list does not have.)
-7. **UI**: one dropdown. Every option carries a UI language; only registry
-   entries with `view=yes` are selectable (today only Mooring — a dialect
-   becomes selectable when its UI translation exists). The local view uses
-   Mooring for the UI, configurable in one place
-   (`LOCAL_VIEW_UI_LANGUAGE` in `web/src/dialects/views.ts`).
-8. Owner's decisions on the data behind this: **Low Saxon** counts as the local
-   majority language in northern Germany; **Südergoesharde** is extinct (1981)
-   but its historic names still label the local view; **Nordstrand, Pellworm and
-   Eiderstedt** get no Frisian area (Low Saxon there); the sheet's
-   `(Gooshiirdinge)` names were sorted into the Goesharde the place lies in
-   (`GOESHARDE_BY_DE` in the migration script). **The `older` column is
-   gone** (owner's decision, one-off `names/bootstrap/drop_older_column.py`, since removed): island
-   and Hallig names went to their dialect's column, mainland names to the
-   Harde's column where OSM's `name:frr` confirms the form, the rest became
-   the Mooring name (when `mooring` was empty) or was dropped as an
-   alternative Mooring spelling. Wallsbüll's and Lundenberg's Goesharder
-   names are now Mooring/Südergoesharder cells with their remark kept.
-9. **Mainland areas are a researched draft.** The mainland rows of
-   `names/dialect_areas.csv` were assigned to the six Harden from German
-   Wikipedia on 2026-09-16 (historic Harde membership; Bohmstedt, Drelsdorf and
-   Ahrenshöft follow the documented Mittelgoesharder dialect instead). Rows
-   whose `note` says `medium` or `low` need the owner's check, above all the
-   Gotteskoog border villages Holm, Uphusum, Galmsbüll and
-   the Stedesand/Klixbüll/Bosbüll assignment to the Karrharde.
-   *(Corrected 2026-09-30: the file has 64 rows — 39 mainland, 25
-   island/Hallig. It had 83 until the owner removed 20 mainland rows and
-   added Husum on 2026-09-20; the geojson follows it, see the 2026-09-20
-   entry below.)*
-
-## Decided 2026-09-17: places OSM does not have get their own point
-
-A row of `places.csv` may carry `lat` / `lon` instead of an `osm` id. The
-injector then adds a node at those coordinates to the extract (tags as for any
-other row, plus `name` and the `place=` value of its `kind`:
-`settlement` → `hamlet`, `warft` → `isolated_dwelling`, `island`/`hallig` →
-`island`), the search index takes its position from the row, and `match.py`
-leaves the row alone. The node ids continue above the highest node id of the
-extract; nothing is written back to OSM.
-
-This answers the first half of open question 3 of the first match run (*Harden
-/ Köge without OSM objects: add to OSM or carry as an overlay?*) for the cases
-where a **point** is enough. Areas (a Harde, a Koog) still need either an OSM
-polygon, a `curation.csv` `polygon_km2` square around a point, or an overlay.
-First use: *Waasterhias* (Westerheide near Nebel on Amrum), which OSM does not
-have.
-
-Also this day: the search index no longer trusts the line numbers in
-`work/matches.csv` — it looks a row's position up by its OSM reference, and
-falls back to the line only when the row on that line is still the same place.
-Deleting one row used to shift every row below it and hand them their
-neighbour's coordinates.
-
-Revised 2026-09-18: the `lat`/`lon` columns went back out of `places.csv`; see
-below.
-
-## Decided 2026-09-18: places OSM does not have are local references, positioned in curation.csv
-
-Yesterday's `lat`/`lon` columns in `places.csv` are reverted (columns and the
-one-off `bootstrap/add_point_columns.py` removed again). A place OSM does not
-have now gets a **local reference** in `places.csv`'s `osm` column instead:
-`local/<slug>` alone in the cell (lowercase ascii letters, digits, hyphens,
-e.g. `local/westerheide-amrum`), never mixed with a real reference, `wikidata`
-left empty; `match.py` leaves such a row alone (`own point` in `REPORT.md`).
-
-The position moves to `curation.csv`, which gains `lat`/`lon` columns
-(mandatory on a row keyed by a local reference, empty on a row keyed by a real
-`osm` reference — the same local reference is the key in both files). The
-injector (`tiles/inject_names.py`) then either adds a **new node** at
-`lat`/`lon` (tags as before: `name:<dialect>`/`frasch:*`, `name` from
-German/Danish/any Frisian name, a `place=` default from `kind` — the warft
-default changed from `isolated_dwelling` to `hamlet`, since OMT gives
-`isolated_dwelling` z14 but `hamlet` z11 and OSM's own Hallig Warften are
-`hamlet` already — then the curation row's `set_tags`/`minzoom`/`maxzoom`
-applied last), or, when the curation row carries `polygon_km2`, only the
-synthetic square of that area centred on `lat`/`lon` and no node at all —
-the route for an area-like place (a Koog) that needs a lower label zoom than
-a node gets. The loader stops the build on a local reference with no curation
-row, a curation local row without `lat`/`lon`, or a local reference used
-twice in `curation.csv`; a curation local row no `places.csv` row uses is
-reported and ignored. The search index takes a local row's position from
-`curation.csv` and uses the local reference itself as the entry's `id`.
-Nothing is uploaded to OSM. First use unchanged: *Waasterhias* (Westerheide
-near Nebel on Amrum). See `names/README.md` for the mechanism in full.
-
-**Why**: coordinates living in the name list could not be addressed by
-`curation.csv`, which is keyed by OSM reference — a hand-placed node only gets
-its id at inject time, and that id changes with every extract. So a
-hand-placed place could get no `set_tags`, no zoom window and no
-`polygon_km2` — exactly what the backlog needs (60 Köge and 8 Harden are
-areas; OpenMapTiles emits hamlet nodes from z11, isolated_dwelling from z14,
-and `frasch:minzoom` can only push a label later, never earlier). A
-coordinate-based pseudo key would have written the position twice. A local
-reference in the identity column both files already share keeps one row = one
-place in the name list, needs no new column in `places.csv`, and gives the
-search index a stable id. Cost: a hand-placed place now needs two rows, one
-per file.
-
-## Decided 2026-09-19: name list under ODbL 1.0
-
-The published name list, named **"Frasche stääsnoome"** (`names/places.csv` and the other hand-edited files in
-`names/`) is licensed under the **Open Database License 1.0**, contents under
-DbCL 1.0; full text in `names/LICENSE`. Attribution string: "Frasche
-stääsnoome, Thore Andresen, ODbL 1.0".
-
-**Why**: the tiles are ODbL anyway (derived from OSM), so nothing else was
-gained by a more permissive choice; ODbL lets anyone push names into OSM
-without a waiver, and share-alike guarantees that an extended or merged list
-(another dialect, another region) comes back to the public. Cost accepted:
-third parties cannot carry the names into Wikidata (CC0); the author can do so
-personally as the rights holder. CC BY-SA was ruled out because OSM cannot
-import it. Preconditions checked: the sheet's sources are many cited
-publications (Hoekstra 2015, Nordfriisk Instituut, Löfstedt 1931, literary
-texts), not a bulk extraction from one database; `places.csv` holds only OSM
-*references*, not OSM names or coordinates (those live in `curation.csv` and
-the build). Still to confirm by the owner: that no one else contributed rows to
-the original sheet (co-authors would have to agree to the license).
-
-The code is MIT (root `LICENSE`, 2026-09-26, #22). The style fork keeps OSM
-Bright's BSD / CC BY notice in `web/src/map/style/LICENSE-osm-bright.md`. The map's attribution
-control shows "© OpenStreetMap contributors" and the OpenMapTiles credit, as a
-fixed licence notice in every UI language (`web/src/map/style/index.ts`).
-
-## Decided 2026-09-19: review the matcher's leftovers on the map (issue #1)
-
-375 rows of `places.csv` had no OSM object after the first match run (325
-*not found*, 38 *ambiguous*). Deciding them from `REPORT.md` meant looking
-every candidate up on openstreetmap.org and editing the CSV by hand, so the
-web app gained a **dev-only curation view** (`http://localhost:5173/?curate`,
-Vite dev server only) and `names/` a companion script `curate.py`:
-
-- `curate.py export` turns `work/matches.csv` + `work/candidates.jsonl` into
-  `work/curate.json`: the open rows in priority order (settlements, islands,
-  Halligen first; Köge and Warften last), each with its candidates' positions
-  and the resolved location hint.
-- The browser shows the rows as a list and the candidates as pins; Nominatim
-  and Overpass lookups (public instances, called from the browser) help with
-  the *not found* rows. Every decision — an OSM reference, a `local/<slug>`
-  with a position clicked on the map, or `skip` — is appended by a Vite dev
-  middleware to `work/curate-patch.jsonl`. The browser never touches
-  `places.csv`; done rows are read back from the patch, so a session resumes.
-- `curate.py apply` writes the patch into `places.csv` (`status=ok`/`skip`,
-  the same three cells `match.py` owns and only rows it still owns) and, for a
-  local reference, appends the position row to `curation.csv`. Review with
-  `git diff`, as after a match run.
-
-**Why a patch file and a script instead of editing the CSV from the browser**:
-`places.csv` stays the single hand-edited source of truth, the ownership rule
-of `match.py` (never a row with `status=ok`/`skip` or a hand-filled `osm`)
-is enforced in one place, and a decision made against a stale line number
-(rows shift when one is added) is refused rather than silently misapplied —
-rows are identified by kind + Frisian name + German name, the line is only the
-fast path.
-
-## Decided 2026-09-20: review the dialect areas on the map (issue #2)
-
-The mainland dialect assignments are a researched draft nobody has eyeballed,
-and a wrong one is invisible: a place is joined to a dialect area by
-point-in-polygon at build time, never by name, so a bad row only shows up as a
-wrong label. `names/dialect_areas.geojson` cannot show them — it is dissolved
-per dialect, one Feature each, and carries neither the municipality name nor
-the research `note`.
-
-So `build_dialect_areas.py` gained a **second output**,
-`names/dialect_areas_parts.geojson`: one Feature per municipality
-(`fid`, `assigned`, `dialect`, `label`, `name`, `note`, `osm`, `line`, `km2`;
-*since 2026-10-08 (#96) without `label`, since 2026-10-14 (#106) without
-`fid` -- the view selects a municipality by its first OSM reference, which
-stays put when a rebuild reorders the features; see
-`names/dialect-area-parts.schema.json`*),
-written from the same in-memory geometry in the same run, so the two files
-cannot disagree. It also carries the Kreis Nordfriesland municipalities that
-**no row claims**, marked `assigned: false` — a hole in the coverage is a bug
-you have to be able to see. Those are found by scanning `admin_level=8`
-relations for a `de:regionalschluessel` starting `01054`, not by a bounding
-box: a box would also catch the neighbouring Kreise, which are not part of the
-dialect map at all. 135 features, 284 kB, **committed** for the same reason as
-the dissolved file — regenerating it needs the gitignored 158 MB extract.
-
-Simplified to 0.0001° (~11 m) rather than the dissolved file's 0.0005°.
-Neighbours are simplified independently, so a shared boundary drifts by up to
-the tolerance in *each* of them; at 50 m that is a visible crack between two
-municipalities that actually touch, at exactly the zoom the review happens at.
-
-Nothing in the Python pipeline may read the parts file: its unit is the
-municipality, not the dialect, so feeding it to `AreaIndex` would silently
-change every dialect lookup. The unassigned features carry no `dialect`
-property at all, which makes `AreaIndex.from_geojson` refuse the file outright
-instead of quietly loading it.
-
-The web app gained a dev-only review view, `http://localhost:5173/?areas`
-(`web/src/dev/AreaPanel.tsx`), a sibling of `?curate`: the parts file as
-a coloured fill inserted before `waterway-name` so it sits under every label,
-one colour per dialect, and a near-opaque outline **in the same hue** so
-municipality boundaries stay visible *inside* one dialect's block — which is
-the point, since what is being checked is a per-municipality assignment.
-Clicking a polygon or a list row shows the name, the dialect and the `note`
-verbatim; `?areas&area=<line>` reopens a row (since 2026-09-27
-`?areas&area=relation/<id>`, see below). `web/vite-plugins/areas.ts`
-serves the file in dev only, so the research prose ("best guess only", "no
-direct source found") about unconfirmed assignments does not ship to the public
-site.
-
-The eleven dialect colours (`web/src/dev/areaLayers.ts`) were not picked
-by eye. The hues come from the data-viz reference palette and the *assignment*
-was solved against the adjacency computed from the geometry itself — which
-turned up Sölring/Wiedingharder as a touching pair, out in the Wattenmeer.
-Every touching pair, and every pair within ~6 km, clears the colour-vision
-gates with ~1.5x margin. Eleven categories cannot all be pairwise
-colourblind-safe — no assignment of any eleven hues can — so colour is never
-the only channel: the legend pairs each swatch with its name, the list is
-grouped by dialect, the detail block spells the dialect out, and clicking a
-legend row draws that dialect alone.
-
-**Confidence is deliberately not modelled**: no `confidence` column, no parsing
-of the `note`, no hatching or dimming. Colour is the dialect and nothing else;
-the raw note on selection is the whole story. **The view is read-only**, unlike
-`?curate`: `dialect_areas.csv` is 64 hand-edited lines and the build takes
-seconds, so a patch file would only add a second way to change the data.
-
-The checklist is `docs/dialect-area-review.md`, keyed by name rather than line
-(rows shift). Five notes had been truncated mid-word at ~180 characters by the
-research run (Galmsbüll, Holm, Stedesand, Ahrenshöft, Süderhöft) and were
-trimmed to their last complete clause — no re-research, nothing added.
-
-*(Resolved 2026-09-30: the review first found 23 municipalities in the
-committed geojson that no CSV row claimed any more. The owner had removed
-those rows on purpose; the geojson was rebuilt from the CSV on 2026-09-27, and
-`just check-outputs` now fails when the two disagree.)*
-
-## Decided 2026-09-27: every `places.csv` row has a stable id (issue #23)
-
-`places.csv` gained an `id` column (last): a slug of the row's Frisian name
-(German, then Danish, when it has none), `-2`, `-3` on repeats, e.g. `naibel`,
-`schorkewarw-2`. `names/check.py --fix` gives a new row one (its first run was
-the migration); `placelist.read` refuses a row without a unique one. An id is
-never changed afterwards, even when the name is.
-
-Everything that used to name a row by its line or by kind + Frisian name +
-German name now uses the id: `work/matches.csv` and `REPORT.md` (which also
-show the line), the curation worklist, patch and `apply`, the curation view's
-done state and `?curate&row=`, the search index's entry `id` and the tiles'
-`frasch:ref`. A `?place=` link therefore survives edits to the list and OSM id
-changes; old `?place=node/…` links, old `ref#line` links and tiles built
-before the switch still resolve through the entry's `osm` field (web
-`entryLookup`). `dialect_areas.csv` rows are keyed by their OSM reference,
-which may now appear on one row only (`?areas&area=relation/…`). Line numbers
-remain only in messages meant for a human.
-
-**Why**: inserting a row renumbered every row below it — `?place=` links to a
-second row on an object (`way/28330569#678`) broke, curation decisions were
-refused after hand edits (11 of ~100 on 2026-09-20), four *Schörkewärw* /
-Kirchwarft rows could not be told apart at all, and a withdrawn decision sent
-with another line number still applied (review finding M2). This supersedes
-the 2026-09-19 note above that rows are identified by kind + names with the
-line as a fast path, and the 2026-09-18 note that a local reference is the
-search-index id.
-
-## Decided 2026-09-27: one pipeline for positions, provenance and drift checks (issue #24)
-
-**Positions are worked out once.** `names/locate.py` finds every OSM object of
-the name list in the extracts (SH + DK) and writes the committed
-`names/osm_objects.json`: a point inside the object's polygon (else its label
-member or first vertex), the outline point as a second try for the dialect,
-the `admin_level` of an administrative boundary and OSM's `name:nds`. The
-injector and the search export both read it and both call
-`locate.dialect_at`, so a label and its search entry cannot disagree. The
-search index no longer reads `work/matches.csv` at all.
-- Every object gets the dialect where it lies (owner's choice: per object,
-  not per row); a search entry takes the first object of its row's `osm`
-  cell. An administrative area above municipality level (Kreis, Amt) gets
-  none.
-- A row on the map whose object the file does not know stops both the
-  export and the injector, instead of silently dropping out of search.
-
-**Orchestration: `just`** (owner's choice over a Makefile — `make` is not on
-the dev machine), installed as a dev dependency (`rust-just`) so `uv run just`
-works everywhere. Recipes: `extracts`, `candidates`, `match`, `objects`,
-`areas`, `index`, `dialects`, `tiles`, `check`, `check-full`, `check-tiles`.
-
-**Provenance.** `names.json` became `{"built_from", "places"}`; the tiles
-carry the same `built_from` (git blob hashes of `places.csv`,
-`dialects.csv`, `curation.csv`, `dialect_areas.geojson`, `osm_objects.json`
-plus the objects' extracts) in the PMTiles `description`. The frontend warns
-in the console when they differ. The dialect areas record the hashes of
-`dialect_areas.csv` and `dialects.csv` and their extract.
-*Superseded 2026-10-15 (#108): the build warns instead, see the entry of that date.*
-
-**Drift check.** `just check-outputs` runs in CI: it regenerates `names.json`
-and `dialects.json` and diffs them, and checks the stamps of the extract-derived
-files (CI has no extract; `-latest` changes daily anyway). `just check-full`
-rebuilds those from local extracts too; `just check-tiles` compares a built
-archive with `names.json`, label by label.
-
-**Hardening.** `candidates.jsonl` names its extracts and is written
-atomically, and `match.py` warns when the extract set changes;
-`match.py --dry-run` writes nothing tracked; `build_dialect_areas.py` stops on
-a missing area (`--allow-missing`); `build.sh` pins Planetiler 0.10.2 by
-sha256, verifies Geofabrik downloads by their `.md5`, builds to temp files.
-
-**Why**: the two chains used to locate places separately, days apart, and
-disagreed on Sylt, Amrum, Oland, Stiardebel and more; nine rows were missing
-from search; the committed `names.json` had been built from an uncommitted
-`places.csv`; and a fresh clone could not rebuild it. This supersedes the
-2026-09-16 note that positions come from the injector's own pre-passes and
-the 2026-09-17 note on how the search index looks positions up.
-
-## Decided 2026-09-28: the Python code is one package (issue #25)
-
-All Python of `names/` and `tiles/` moved into the package `frasch/` at the
-repo root, installed editable by uv; the scripts stay where they were as
-launchers, so the justfile, `tiles/build.sh` and the docs keep their paths.
-*Superseded 2026-10-06 (#91): the launchers are gone, see the entry of that date.*
-Library code raises (`ValidationError` with every problem found, not only the
-first); only a command's `main()` exits. Each concept exists once: the dialect
-registry reader (passed in, not read at import), the curation file
-(`curationlist`), the North Frisia box (`geo`, the matcher's box with
-Helgoland, so `build_candidates.py` now keeps Helgoland's roads too), the PBF
-passes and ring assembly (`osmscan`, `osmgeom`), the name index. The curation
-patch has a JSON Schema (`names/curate-patch.schema.json`) that `curate.py
-apply` (with the `jsonschema` package) and the web side both take from. See
-`names/README.md#code`.
-
-## Decided 2026-09-30: the website is built from published tiles (issue #28)
-
-**Tiles are published, not built, for the website.** Each finished archive
-becomes the asset of its own GitHub release of this repository
-(`tiles-<yyyymmdd>-<sha8>`, owner's choice over R2, which has not been set up yet), and `web/tiles.lock`
-pins the one the site uses (URL + sha256). `uv run just publish-tiles`
-uploads a build and rewrites the lock. `npm run fetch-assets` fetches the
-glyphs and that archive, so a fresh clone builds a working site with no Java,
-Python or OSM downloads. CI does the same and runs `npm run smoke` on the result.
-
-**A build ships the pinned archive or none** (owner's choice).
-`public/tiles/` is only for the dev server: the fetch links it to the cached
-archive (`web/.cache/tiles/<sha256>.pmtiles`) unless a tile builder has linked
-their own build there. `vite-plugins/tiles.ts` drops whatever Vite copied from
-it, and puts the verified pinned archive into `dist/`, or none with
-`VITE_TILES_URL`. It also stops the build at its start when the glyphs or the
-archive are missing (owner's choice over a warning).
-*Superseded 2026-10-15 (#108): it is `vite-plugins/build/tiles.ts`, run by the one build plugin.*
-
-**Planetiler's own inputs are pinned.** `build.sh` no longer uses
-`--download`. Natural Earth 5.1.2 and the water polygons (2026-09-14) have no
-versioned URL upstream, so they are mirrored as assets of the
-`tile-sources-2026-09-30` release (owner's choice over pinning the upstream
-URLs by hash, which would break with every upstream update). The lake
-centerlines are the `v12` release Planetiler itself pins. All three are
-verified by sha256. `SNAPSHOT=yymmdd` builds from Geofabrik's dated extract of
-that day; the name pipeline stays on `-latest`.
-
-**Why**: a frontend contributor or CI could not get a map without running the
-whole tile pipeline, and two builds from the same commit could differ in their
-inputs. A build also shipped whichever archive happened to be linked, with no
-record of which one.
-
-## Decided 2026-09-30: one command after an edit, `just update` (issue #57)
-
-Adding a place meant knowing which of `check.py --fix`, `curate.py apply`,
-`just candidates`, `match.py`, `just objects`, `just areas`, `just index`
-(with `just dialects`), `curate.py export` and `just check-outputs` to run, and
-in which order. `uv run just update`
-(`frasch/update.py`) now runs all of them in that order and ends with the
-files it changed and the rows left to curate. Owner's choices:
-
-- **A Python command behind a `just` recipe**, not a recipe chaining the
-  others: just has no timestamps, so a pure recipe would rescan the extracts
-  (~8 min) on every run, and it could not be tested.
-- **Slow steps are skipped when their inputs did not change**: the candidate
-  scan when `candidates.jsonl`'s header names the current extracts,
-  `locate.py` when `osm_objects.json` holds exactly the references of the
-  rows on the map and comes from the current extracts, the dialect areas when
-  their stamp names the current area list, registry and extract. The rest
-  runs every time; it takes seconds.
-- **No tiles**: they need Java and minutes of Planetiler, and are not
-  committed. The summary points to `just tiles`.
-
-A failing step stops the run. The exception is a decision that `curate.py
-apply` refuses: it stays in the patch as before, and the rest of the run
-goes on (the command exits 1). Otherwise one stale decision in the browser
-would block every update. Nothing is committed automatically.
-
-## Decided 2026-10-01: the list's German name is the tiles' `name:de` (issue #61)
-
-The injector writes the first variant of a row's `de` as `name:de` on every
-object the row tags, in place of OSM's own. Where the list has no German name,
-OSM's `name:de` stays. `check_tiles.py` holds the tiles to it like the
-dialect and the local name.
-
-**Why**: the label chain's `name:de` step read two different things. The map
-took OSM's `name:de` from the tile, while the place card and the search
-results took the list's `de` from names.json. With today's data no listed
-place reaches that step: a row is on the map only with a Frisian name, and
-the dialect chain tries every dialect first. The local view reaches it only
-for an object without an OSM `name`. But it would have split as soon as one
-did. Writing the list's name into the tiles makes the two sides agree by
-construction, and the map's German fallback follows the curated list rather
-than OSM. The other option was to carry OSM's `name:de` in names.json beside
-the list's (as `name_osm` does for `name`, #32). That would have kept OSM's
-German names on the map. It changes 5 objects today, e.g. *Norddorf auf
-Amrum* → *Norddorf* and *Glücksburg (Ostsee)* → *Glücksburg*.
-
-## Decided 2026-10-02: one command per routine task (issue #74)
-
-The root `justfile` is the one entry point, `uv run just` (owner's choice
-over a global `just`, which would no longer be pinned by `uv.lock`). Its
-recipes are grouped: **everyday** (`setup`, `dev`, `check`, `check-python`,
-`format`, `build`, `smoke`), **name pipeline** (`update`, `check-outputs`,
-which was `check` before), **tiles**, and **pipeline steps**, the single steps
-`update` runs, kept for running one by hand (owner's choice over hiding or
-removing them). Commands that take arguments (`check.py --fix`, `curate.py`,
-`match.py --dry-run`) stay as they are.
-
-- **`check` runs every check and lists the failed ones at the end** (owner's
-  choice over stopping at the first), through `scripts/run-all.sh`. One
-  runner serves both sides; `web/` calls it as `../scripts/run-all.sh`.
-- **`web/` still needs no Python** (#28): `npm run check`, `npm run build` and
-  `npm run smoke` hold the web side's steps, and the `just` recipes only call
-  them.
-- **Every build is checked**: `npm run build` ends with `check-build.mjs`
-  (owner's choice), and `npm run smoke` builds first. *Superseded 2026-10-15 (#108): the check
-  runs inside the Vite build, `vite-plugins/build/checkBuild.ts`.*
-- **CI calls the composite commands** (`just check-python`, `npm run check`,
-  `npm run smoke`), so CI and a local run cannot drift. The price is one CI
-  step per side instead of one per check: a failure is found in the log
-  (`run-all:` marks each command and lists the failed ones), not by the
-  step's name. In CI `check-python` writes pytest's and `names/check.py`'s
-  overviews to the run's summary page, as the separate steps did.
-
-**Why**: checking before a push took 11 commands, building and smoke-testing
-three more, and CI listed each again. The same tool was called three ways
-(`.venv/bin/…`, `uv run just …`, `npm run …`), and `just --list` put the
-routine recipes and the pipeline's internals side by side.
-
-## Decided 2026-10-02: ship only the glyph ranges the labels need (issue #29)
-
-`dist/fonts/` held all 256 ranges of each of the three Noto Sans stacks,
-102 MB, almost all of it scripts no label of the map uses. Now it holds the
-10 ranges `web/fonts.lock` lists, ~2.6 MB.
-
-- **A committed list, checked by the build** (owner's choice over deriving
-  the ranges from the archive at every build): what `dist/` ships is
-  reviewed in git, and the build stops when a label of the pinned archive
-  needs a range the list lacks.
-- **The list is the Latin blocks and punctuation plus what a survey of the
-  archive found** (owner's choice over the survey alone): 0–1023, Latin
-  Extended Additional, General Punctuation, and the survey's Number Forms,
-  Miscellaneous Symbols, CJK punctuation and variation selectors. Mooring
-  ä ö ü å and Sölring đ ā are in the first two (owner's requirement).
-- **Every code point counts** (owner's choice over mirroring MapLibre): MapLibre
-  draws CJK punctuation and multi-code-point clusters itself and does not
-  request their range, but that is its internals; the check requires a range
-  for every character a label has.
-- **`fetch-fonts.sh` keeps only the listed ranges** (owner's choice over
-  trimming them in the build): the dev server serves what production
-  serves. The list lives in `web/fonts.lock` with the zip's URL and sha256
-  (owner's choice over a separate ranges file). *Superseded 2026-10-15 (#108): `npm run
-  fetch-assets` (`scripts/fetch-assets.ts`) does it.*
-- **With `VITE_TILES_URL`** the fetched archive is checked if there is one,
-  else the build warns (owner's choice over requiring the archive).
-
-**Why**: every deploy uploaded 102 MB of glyphs, and a range that is missing
-shows: MapLibre then draws the glyph locally in another font, and the smoke
-check reports the 404.
-
-## Decided 2026-10-03: inside a dialect area OSM's `name:frr` is the local name (issue #81)
-
-The local view labelled a place inside a dialect area in German when the name
-list did not have it, although OSM names it in Frisian: the Fahretoft warft
-*Kirchwarft* has `name:frr=Schörkeweerw`. `name:frr` is left out of the local
-chain on purpose, because outside the areas it is a Frisian exonym (Pinneberg
-→ *Pinebärj*). Inside an area the reasoning is reversed: there it is almost
-always the local form. Owner's choices:
-
-- **The injector writes it into `frasch:local`**, the label chain stays as it
-  is (owner's choice over a `within` branch in the style's `text-field`,
-  which would have needed the dialect areas in the browser and the click
-  position on the card).
-- **Every object**, not only places: streets, stations and offices with a
-  `name:frr` inside an area get the Frisian label too. One rule, no class
-  list to maintain.
-- **Listed objects too** *(revised 2026-11-15, #161: no longer. A place the
-  list has takes its Frisian names from the list alone, see the entry of
-  that date. `osm_objects.json` has no `name_frr` any more.)*: a row's own
-  local name wins, but where the list gives none, OSM's `name:frr` is it. Otherwise adding a place to
-  `places.csv` with only a Mooring name would take its Frisian label away.
-  `osm_objects.json` records `name_frr` for this, and `names.json`'s `local`
-  follows the same rule (`dialects.osm_local_name`), so map, card and search
-  agree. 18 search entries gained a `local` this way, e.g. Husum → *Hüsem*.
-- **The objects without a row are located by a pre-pass of the injector**
-  over the extract it is tagging (owner's choice over recording them in
-  `osm_objects.json`): a new `name:frr` in OSM is on the map with the next
-  tile build, and the committed file stays "the objects of the name list".
-  This is no return to the injector's own positions for *listed* objects
-  (2026-09-27): those still come from the file, because the search index
-  needs the same answer. An object without a row has no search entry to
-  disagree with.
-
-Consequence: in a dialect view the chain is `name:<dialect>` → `frasch:local`
-→ the other dialects → `name:frr`. A listed place without a name in the
-selected dialect and without a local name from the list used to show another
-dialect's list name; inside an area it now shows OSM's `name:frr` first.
-
-In the Schleswig-Holstein extract of 2026-09-22, 532 objects carry
-`name:frr`; 397 of them lie in a dialect area. The injector gives 167 objects
-no row claims their local name from it (mostly town signs, which no tile
-layer labels, then streets, stations, Warften mapped as `landuse`, places,
-boundaries and waters) and 21 objects the list claims. 20 of those are
-referenced by a row itself (19 rows), which is what `osm_objects.json`
-shows; an entry stands for the first object of its row, hence the 18 search
-entries above.
-
-The place card follows: for a clicked feature its own `frasch:local` now
-wins over the entry's `local` and brings its `frasch:dialect` along
-(`cardEntry` in `web/src/names.ts`). An entry
-lies where the first object of its row lies, so its local name may be that
-object's OSM name, while a second object of the row lies in another area and
-has a list name there (Nordwarft: the way on the Hallig, the node in the
-Nordergoesharde).
-
-## Decided 2026-10-03: a dangling link in `public/tiles/` stops the build with a hint (issue #53)
-
-A tile builder's link in `web/public/tiles/` to an archive that is not built
-yet failed `npm run build` inside Vite's copy of `public/`, with a bare
-`ENOENT`, although the build ships the pinned archive anyway.
-`vite-plugins/tiles.ts` now names every such link at the build's start, with
-the two ways out: build the tiles, or remove the link and run
-`npm run fetch-tiles` (owner's choice over a plugin that takes over Vite's
-copy of `public/` and builds anyway). It does so with `VITE_TILES_URL` too.
-`npm run fetch-tiles` keeps a link that is not its own even when it dangles,
-but warns instead of saying the dev server serves it (owner's choice over
-replacing it: the link may have been set ahead of the first tile build).
-*Superseded 2026-10-15 (#108): `vite-plugins/build/tiles.ts` and `npm run fetch-assets`, with one
-message.*
-
-## Decided 2026-10-06: one `frasch` command, no launchers (issue #91)
-
-This supersedes the 2026-09-28 decision to keep `names/*.py` and
-`tiles/*.py` as thin launchers (issue #25). The 13 launchers are deleted; the
-package `frasch/` is run as one installed command, `uv run frasch <command>`
-(`frasch <command>` inside the venv): `[project.scripts]` in `pyproject.toml`
-points at the command table in `frasch/__main__.py`. The justfile, `tiles/build.sh`,
-the docs and the web app's hints name the command instead of a script path.
-Earlier entries of this log keep the script names they were written with:
-
-| was | is |
-|---|---|
-| `names/check.py` | `frasch check-inputs` (and a new `just check-inputs`) |
-| `names/check_built.py` | `frasch check-outputs` |
-| `names/build_candidates.py` | `frasch candidates` |
-| `names/match.py` | `frasch match` |
-| `names/locate.py` | `frasch objects` |
-| `names/build_dialect_areas.py` | `frasch areas` |
-| `names/dialects.py` | `frasch dialects` |
-| `names/export_search_index.py` | `frasch index` |
-| `names/provenance.py` | `frasch provenance` |
-| `names/update.py` | `frasch update` |
-| `names/curate.py` | `frasch curate` (`export` / `apply`) |
-| `tiles/inject_names.py` | `frasch inject` |
-| `tiles/check_tiles.py` | `frasch check-tiles` |
-
-- **The file layout is one object**: `frasch.paths.Workspace`, a dataclass with
-  one attribute per file of the pipeline; `Workspace.default()` is the
-  repository's layout. A command takes the paths from it, whatever the
-  working directory.
-- **One flag vocabulary**: a flag names the same file in every command
-  (`--names`, `--dialects`, `--curation`, `--area-list`, `--areas`, `--parts`,
-  `--objects`, `--index`, `--registry-json`, `--report`, ..., and `--work` for
-  the scratch directory). Renamed to make that true: `--registry` is
-  `--dialects`; the area list is `--area-list` and `--areas` is the geojson
-  (it was the csv in `check.py` and `build_dialect_areas.py`); `--parts-out`
-  is `--parts`. `--out` is gone: an output is named by its file's flag
-  (`frasch objects --objects`, `frasch index --index`). `dialects --export`
-  is a switch that writes the file `--registry-json` names. `tiles/build.sh`
-  passes `NAMES`, `DIALECTS`, `AREAS`, `OBJECTS` and `CURATION` on only when
-  the environment variable is set; otherwise the command's own default holds.
-  A command takes only the flags of the files it works on
-  (`cli.add_workspace_options`), so a path it would ignore is an error.
-  Two options made way for the vocabulary: `frasch candidates --index`
-  (pyosmium's node index) is `--location-index`, and `--parts-out ''` is
-  `frasch areas --no-parts`.
-- **Typed functions under every command**: a command's `main()` parses and
-  calls a function that takes the `Workspace` and the `Registry`
-  (`locate.build`, `match.run`, `curate.apply`, ...); `update` and
-  `check-outputs` call those functions instead of other commands' `main()`
-  with argument lists. `update` reads the registry once -- its first step,
-  the input check, hands it to the later ones --, so `update --dialects X`
-  uses X in every step. The parsers take no abbreviated options
-  (`cli.parser`): the old `--registry` must not pass for `--registry-json`.
-- **The tests have a dialect registry of their own** (`names/tests/conftest.py`)
-  and work on a `Workspace` in a temp directory through the typed functions;
-  each command keeps one test through `frasch.__main__.main`. No test reads
-  `names/dialects.csv`.
-- **The dialect registry is always passed explicitly**: `registry.default()`
-  (a default registry, read on first use) is removed; every command
-  reads it from `--dialects` and hands it down.
-- **Modules**: `check` is `check_inputs` and `check_built` is `check_outputs`;
-  `export_search_index` is merged into `searchindex`, `print_provenance` into
-  `provenance` and `export_dialects` into `registry`. The other modules keep
-  their names. See `names/README.md#code`.
-
-## Decided 2026-10-06: one reader for the four hand-edited tables (issue #92)
-
-`places.csv`, `curation.csv`, `dialects.csv` and `dialect_areas.csv` had four
-hand-written CSV readers with three behaviours. They are now parsed in one
-place, `frasch/tables.py`: `read_table` owns the byte order mark, the
-`;`-separated export, columns named twice or missing, the cell count of every
-row, blank lines and the line number an editor sees; `write_rows` writes
-them. Each file's module keeps only the rules of its rows, and each file is
-opened by one function. So all four now answer a `;`-separated export and a
-row with a comma too many or too few with the same message, and name the true
-line after a blank one — the area list did none of the three, and `places.csv`
-refused a comma-short row only by accident.
-
-- **Every documented column is required**, for every command alike:
-  `curation.csv` needs all nine (`frasch check-inputs` and the tile build used
-  to need only `osm`, `frasch curate apply` all of them), `dialect_areas.csv`
-  all four (`name` and `note` were optional). A column of your own beyond
-  them is still fine.
-- **A problem has one shape**: `errors.Problem(path, line, message)`. A
-  `ValidationError` means "a hand-edited file breaks its rules" and carries a
-  list of them. What cannot name a line of such a file — an unknown dialect
-  tag, a local reference without a position at build time, an old
-  `work/matches.csv` — is a plain `PipelineError`; `Invalid` (one cell that
-  breaks the rules) is one too. Messages and exit codes are unchanged.
-
-## Decided 2026-10-06: the pipeline is defined once (issue #95)
-
-For each generated file there were three answers to "what makes it, from
-what, and is it current": a just recipe, a step of `frasch update` with its
-own staleness rule, and a check in `frasch check-outputs` with the recipe's
-name as a string. The two Python sides disagreed (for the dialect areas
-`update` compared the whole stamp, the check only its hashes; for the objects
-`update` wanted exactly the references on the map, the check only that none
-was missing), and `REPORT.md` was committed without any check.
-
-- **One table, `frasch/pipeline.py`**: an `Output` per generated file —
-  `candidates`, `report`, `objects`, `areas`, `dialects`, `index` — with its
-  files, what it is built from, `build` and `stale()`. `frasch update` builds
-  the table's outputs in order, `frasch check-outputs` reports the committed
-  ones that are stale or that a rebuild gives another file for, and
-  `frasch build <name>` builds one. A new generated file is one entry.
-- **One `stale()` for both.** The extracts are compared where they are at
-  hand (`update`, `check-full`) and only the inputs where they are not (CI).
-  For the objects it is `update`'s rule: located for exactly the references
-  the rows on the map name, so a row taken off the map needs a rebuild too.
-  The report is written from the candidates, so where extracts are at hand
-  its extracts are compared with the candidates', not with the downloaded
-  ones: after a new download the candidates are stale, and the report only
-  once they were scanned again — rebuilding it earlier could not help.
-  Without extracts at hand the candidates are not looked at, so that the
-  plain check says the same on every machine.
-- **`update` skips only a scan of an extract** (candidates, objects, dialect
-  areas) whose output is not stale. The matcher runs every time (owner's
-  decision): it changes `places.csv` and depends on Wikidata's answers,
-  which no stamp covers. The frontend's registry and the search index are
-  cheap and are built every time as well.
-- **One `Stamp`** (`frasch/provenance.py`): `Stamp.of` makes it, `Stamp.read`
-  reads it from any stamped file, `Stamp.other_than` says which inputs
-  differ. Where a file carries it did not change — `built_from` at the top of
-  a JSON file (the tiles carry the same object as `names.json`), in the
-  `properties` of a GeoJSON, as the header line of `candidates.jsonl` — so no
-  committed file changed and the candidates need no rescan.
-  `dialects.json` carries none: the frontend compiles the array in, and its
-  check is the byte comparison.
-- **`osm_objects.json` records what was asked for**: `not_found` lists the
-  references no extract holds (left out when empty, so the committed file
-  stayed byte-identical and `names.json`'s stamp still matches the published
-  tiles). Such a reference used to make `update` locate again on every run,
-  with the advice to run `just objects`, which could not help. Now it is not
-  stale, and one message (`objects.unlocated`) tells the two cases apart: not
-  located yet, or in no extract — then the row's `osm` cell is to correct.
-- **`REPORT.md` is stamped and checked** (owner's decision: it stays
-  committed). Its last line is a comment with the stamp: `places.csv` as the
-  matcher left it, `dialects.csv`, and the extracts behind the candidates. It
-  cannot be rebuilt in CI, because the matcher needs the git-ignored
-  candidates, so its check is the stamp. The consequence: after an edit to
-  `places.csv` or `dialects.csv`, CI fails until `just update` (or
-  `frasch match`) has rewritten the report. `work/match-extracts.json` is
-  gone; the matcher's "other extracts than the last match" warning compares
-  with the report's stamp.
-- **Recipes and commands** (owner's decisions): the recipes `objects`,
-  `areas`, `dialects`, `index` and `candidates` became `just rebuild <name>`
-  (`just build` is the site's), which runs `frasch build <name>` and
-  downloads the extracts only for an output the table says is built from
-  them (`frasch build <name> --scans`), as `index` and `dialects` needed
-  none before. The
-  commands `frasch objects`, `frasch index` and `frasch dialects --export`
-  went, since `frasch build` does the same; `frasch areas` and
-  `frasch candidates` stay for their own options. `just check-full` rebuilds
-  each file from the extracts it is given and no longer picks them by the
-  file names in each stamp.
-
-## Decided 2026-10-07: one place-name rule, one table of tile keys (issue #93)
-
-"Which names and attributes does a place get" was composed twice from the
-same primitives: by the injector for the tiles (several rows per object) and
-by the search export (one row), and the mapping between an entry's fields and
-the tile keys was written out again in `check-tiles` and as a literal in
-`tiles/build.sh`. It is now one module, `frasch/placenames.py`: `resolve`
-holds the whole rule, the `name:frr` fallback inside a dialect area included;
-`as_tags` writes its result for the injector, `as_entry` for the index;
-`TILE_KEY` is the table entry field → tile key, and the keys the injector
-writes are defined there and nowhere else in the Python code. What stays
-elsewhere reads OSM's own tags from an extract: the matcher's `name:de` and
-`name:` prefix, and `name:frr`.
-
-- **`check-tiles` compares everything the two share**: every field of
-  `TILE_KEY` and the name in every dialect, where it compared the dialect, the
-  local name and the German name. It reads the registry for that
-  (`--dialects`).
-- **An object two rows claim** (owner's decision): the rule stays "the first
-  non-empty value across the rows, the first row's id". The injector passes
-  every claiming row, the index its own, so tile output is unchanged;
-  `check-inputs` rejects such a claim, and `check-tiles` now reports what the
-  second row filled in.
-- **A curation row that sets `frasch:kind` on a row's own object** (owner's
-  decision) is a disagreement `check-tiles` reports when the two differ; the
-  fix is the row's `kind`. None differs today: the curation rows that set
-  `frasch:kind` on an entry's own object (Süderoogsand, Japsand) set the
-  row's own kind, the others sit on objects without an entry.
-- **Planetiler's lists come from the commands**: `tiles/nametags.sh` builds
-  `--languages` and `--extra_name_tags` from `frasch dialects --tags` and the
-  new `frasch tile-keys`. A test runs it and fails when the injector writes a
-  key Planetiler is not told to carry.
-- **Objects that are not in the objects file** are built in
-  `frasch/objects.py`: `point`, `local_point` (a local reference's point, with
-  the generic name the injector gives it) and `Objects.for_row` (the object a
-  row's entry stands for). A node found through its QID alone is now read like
-  an object of the file (`locate.object_facts`).
-- The frontend's copy of the table (`web/src/names.ts`) is issue #104.
-
-
-## Decided 2026-10-08: a schema for every file that crosses to the web app (issue #96)
-
-Four files are written by Python and read by TypeScript. The curation patch
-had a JSON Schema; the worklist (`names/work/curate.json`), the search index
-(`web/public/data/names.json`) and the area parts
-(`names/dialect_areas_parts.geojson`) were typed by hand on both sides, and
-had drifted: `km` could be `null` in Python and not in TypeScript, fields
-that are always written were optional in the browser.
-
-- **One schema per file**, next to the patch's: `curate-worklist`,
-  `search-index` and `dialect-area-parts` (`names/*.schema.json`). It holds
-  what each field means; the README's copy of the search entry is gone.
-- **Each side is held to it by a test.** A Python test validates what the
-  writer produces. A TypeScript test pins the hand-written type: its field
-  names, which fields may be left out, and the JSON type of each (owner's
-  choice over names and enums alone, as the patch's pin did, and over
-  generating the types, which would have added a dependency and a generated
-  file). The pin is an object literal that only compiles while it says what
-  the type says, compared with the schema at run time
-  (`web/src/testing/schemaPin.ts`). Neither side validates at run time.
-- **The worklist carries the rules, not the cells to apply them to.** A row
-  has its primary German and Danish names (`name_de`, `name_da`, named as in
-  names.json; `de` and `da` stay the raw cells for display, owner's choice),
-  the file names the kinds a local reference can be a polygon for and the
-  results. The browser's copy of `placelist.primary` is gone. names.json's
-  `osm` stays the row's reference string, which the web app still splits
-  (owner's choice).
-- **names.json is checked once, where it is loaded** (`parseNames`), and
-  trusted after that.
-- **The area labels come from the registry alone**, and a test holds the
-  review view's colour table to the registry's tags.
-- **No tolerance for files no version of the code writes**: candidates
-  without a header (the match now stops, as on any unstamped file), a
-  `matches.csv` or a patch line without `id`, a worklist without `in_sh`, a
-  name list with `lat`/`lon` columns, a names.json without `names`.
-
-## Decided 2026-10-09: modules by concept; a double claim is an error of the list (issue #94)
-
-`placelist.py` held seven concerns, and `registry.py`, `dialects.py` and
-`objects.py` held other things than their names said, so modules that only
-needed a reference type imported the `places.csv` module. Each concept now
-has its module (see `names/README.md#code`); earlier entries of this log keep
-the names they were written with:
-
-| was | is |
-|---|---|
-| `placelist`: `parse_osm`, `format_osm`, `Ref`, `OsmRef`, `LOCAL_TYPE`, `SLUG` | `frasch/refs.py`: `parse`, `format`, … |
-| `placelist`: `parts`, `variants`, `primary`, `remark` | `frasch/namecell.py` |
-| `placelist.lock` | `files.lock` |
-| `registry.py` | `dialects.py` (the registry, its export, `frasch dialects`) |
-| `dialects.py` (`area_rows`, `AreaIndex`) and `objects.dialect_at` | `dialect_areas.py` |
-| `objects`: `named`, `unlocated`, `require_located`, `Objects.for_row`, `local_point` | `frasch/placeobjects.py` |
-
-- **`placelist.read` returns a `PlaceList`** (`rows`, `fields`, `reg`, `path`,
-  the digest of the file it was read from) that writes itself. The module
-  global that remembered a digest per path is gone, and with it "a write
-  needs a read in this process": a list only exists once it was read. Two
-  lists read from one file no longer share that memory, so the one written
-  second stops with a `Conflict`.
-- **A `PlaceRow` knows its references**: `refs`, `osm_refs` and `local`,
-  parsed once and following the `osm` cell when the matcher or `curate apply`
-  rewrites it. Nothing outside `placelist` parses the cell of a row again.
-- **One `claims(row)`** (owner's decision): a row holds the objects of its
-  `osm` cell and its Wikidata item unless it is `skip` — also while it is
-  `not_a_place` or has no Frisian name yet. `on_map(row)` is defined on top:
-  it claims something, is a place and has a Frisian name. No row of the list
-  was in the gap between the two.
-- **A double claim is an error of the list itself** (owner's decision). It was
-  detected three times with three severities: an error in `check-inputs`, a
-  section of `REPORT.md`, a "claimed twice" notice of the injector. It is now
-  a rule of `placelist.rows`, next to the unique `id`: `check-inputs` lists
-  it and `placelist.read` refuses the list, so every command stops with file
-  and line. This supersedes the 2026-10-07 decision "an object two rows
-  claim: the first non-empty value across the rows": `placenames.resolve`
-  takes the one row that claims an object, the injector keeps one row per
-  object, and its conflict report and the report's "Rows sharing one OSM
-  object" section are gone.
-- **Nothing writes a double claim.** `frasch curate apply` refuses a decision
-  for an object or item another row holds. The matcher (owner's decision)
-  counts what it gives out in a run as claimed for the rows after it, and
-  starts from every row it leaves as it is: of two rows for one place the
-  first gets the object, the second stays unmatched with "… is taken by line
-  N" and so shows up in the worklist. What the matcher gave out in the run
-  holds only that object; "another row holds part of this very feature"
-  stays the word of a row a human decided (the dyke Deezbüll Deich carries
-  `alt_name=Deezbülleck` and lies at the hamlet of that name: its row takes
-  the dyke, not the place). A row whose object carries a Wikidata
-  item another row holds keeps the object without the item (OSM tags an
-  island and its village with one item); a country, which is matched by its
-  item alone, is then not found.
-- The registry's `Dialect` is built from one field list (`FIELDS`, the keys
-  of the `TypedDict`).
-
-## Decided 2026-10-10: one model for kinds, row state and OSM tags (issue #97)
-
-A row's kind and its state decide most of what the matcher and the curation
-step do, and neither had one definition; the OSM tag lists were written out
-three and four times.
-
-| was | is |
-|---|---|
-| `match.kind_ok`, `canonical`, `type_bonus`, `NF_ONLY_KINDS`, the kind tuple of `absorb_boundaries`; `placelist.KINDS`; `curate.KIND_ORDER`, `POLYGON_KINDS`; `curationlist.POINT_TAGS` | `frasch/kinds.py`: one `KindRule` per kind, in review order |
-| `placelist.owned_by_matcher`, `match._report_state`, the `result` chain of `write_matches`, `curate.owner_problem` | `placelist.state(row, reg)` → `RowState` |
-| `match._write_back`, `curate.decide`, `curate.decide_local` writing `osm` / `wikidata` / `status` | `placelist.Reference` and its five constructors |
-| `nameindex.NAME_FIELD_RANK`, the scan's `NAME_KEYS_EXTRA` and `has_name`; `CLASS_KEYS`, `candidates.decisive_tags`, the chain in `match.fmt_cand`; `SETTLEMENT_PLACES`, `MINOR_PLACES`, `CORE_PLACES`, `ISLAND_PLACES` | `frasch/osmtags.py` |
-| the browser's `SETTLEMENT_CLASSES` and `INTERESTING_TAGS` | `settlement_places` and `class_keys` of the worklist |
-
-- **A kind's rule is data**: the tag tests it accepts, the tests of its
-  canonical object, the points of its type bonus (`Fit`), what a bare
-  administrative boundary is to it, and whether it is found by its Wikidata
-  item instead of an OSM object (`by_item`: a country). The table was compared with the functions
-  it replaces on random tag sets before those were deleted. The type bonuses
-  stay numbers in the table, each beside the test it belongs to; the weights
-  that apply to every kind are named (`WIKIDATA_BONUS`, `GERMAN_NAME_BONUS`,
-  `KM_PER_POINT`, `UNPLACED_KM`).
-- **A peninsula's outline gets the island bonus.** It passed as the canonical
-  object of an island (Nordstrand) and then scored 4 instead of 30.
-- **`RowState` has the report's precedence** (not a place, skip, no name, own
-  point, by hand, auto, open). `matches.csv` spells a state as the enum does
-  (`by_hand`, `own_point`, `no_name`, …), in the style of `not_found`
-  (owner's choice); the report keeps its headings, from the enum's labels.
-  The match outcomes (`matched`, `ambiguous`, …) are left for #98.
-- **A row without a Frisian name is not the matcher's.** The matcher already
-  left such rows alone; `curate apply` now refuses a decision for a row that
-  lost its name since the export.
-- **A reference is written whole.** A patch entry without a Wikidata item
-  clears the row's item: `entry.get("wikidata") or row["wikidata"]` kept the
-  item of the object the matcher had given the row beside the new `osm`. A
-  skip decision clears `osm` and `wikidata` too (owner's choice): an
-  unreviewed auto match stayed beside `skip`, and read as hand-filled once
-  the `skip` was removed.
-- **The scan keeps the same objects, and of each only what is read** (owner's
-  choice): the objects kept for a bare `wikidata` / `wikipedia` tag, a
-  harbour or a marina stay candidates, as near misses a reviewer can pick.
-  A record loses `cls` and the tags nothing read; `candidates.jsonl` shrank
-  from 36.6 MB to 28.4 MB. "Named" now means one of the seven name tags the
-  index reads: an object named by `short_name` alone is scanned (the
-  extracts of September 2026 have none), 76 objects named only by a
-  `name:*` no row could find it by are not.
-- **One order of the class tags**, that of the `class` in a `candidates`
-  cell, with `water` and `historic` added at the end: an object that had
-  only one of these was listed as `-`.
-- **The hint resolver takes an island by the kinds' rule** (`osmtags.is_island`):
-  a hint that names a `natural=archipelago` gets the island radius, and an
-  island named by `natural` alone is as plausible as one named by `place`.
-- **An unknown distance is not nought.** `x or default` took a real `0.0`
-  for unknown, and the default `0` printed "0 km from North Frisia" for a
-  match the scan could not place. `geo.km_or` and `geo.FAR` replace it.
-- **No generated file is part of the change** (owner's choice). On the
-  extracts of September 2026 the matcher gives every row what it gave
-  before; a run changes one line of `REPORT.md` (the near miss of Rungholt
-  is an `archaeological_site`, no longer `-`).
-
-## Decided 2026-10-11: the matcher by concern, a typed result, a structured matches file (issue #98)
-
-`match.py` was seven modules, its result an untyped dict whose `status` meant
-two things, and it handed its candidates to the curation export as one text
-cell, which the export parsed back before reading the candidates file again.
-
-| was | is |
-|---|---|
-| `match.MatchResult` (a dict: the row's cells, `status`, `osm_type`, a `;`-joined `osm_id`, `candidates` as text), `RankedCandidate` | `frasch/matchresult.py`: the frozen dataclass `MatchResult`, the `Outcome` enum, `RankedCandidate` |
-| `match.linear_radius`, `is_core`, `cluster`, `_centred`, `_placed`, the re-clustering in `_held` | `frasch/clusters.py`, with `same_feature(a, b)` |
-| `match.wikidata_countries`, `_wikidata_country`, `read_wikidata_cache` | `frasch/wikidata.py`: `countries`, `read_cache` |
-| `match.write_matches`, `fmt_cands`, `MATCH_COLUMNS`; `curate.parse_candidates`, `stream_records`, `_read_index`, `_work_candidates`, `work_candidate`, `ListedCandidate`, `_first_hint` | `frasch/matchfile.py`: `entry`, `write`, `read` |
-| `match.write_report` and its sections, `report_cands`, `fmt_cand`, `stamp`, `extract_set_warning`, `check_extracts` | `frasch/matchreport.py` (`write`, `stamp`, `extracts_warning`) and `candidates.extracts` |
-| `work/matches.csv` | `work/matches.jsonl` |
-
-- **The command stays in `match.py`** (owner's choice), next to the decision:
-  `run` and `main` read and write through the other modules, and
-  `match.run` is still what the pipeline and the tests call. The result types
-  have their own module, `matchresult`, so that the two writers do not import
-  the command that calls them.
-- **A result is typed and holds nothing twice.** `result` is an `Outcome`
-  (`matched`, `ambiguous`, `not_found`, `lookup_failed`; the first open point
-  of the #97 entry), no longer the word `status`, which a row's cell has. The
-  references are parsed pairs, the candidates are records, in the order a
-  reviewer sees them; text is made by the writers alone.
-- **`matches.jsonl` holds the rows the matcher owns, each with its whole
-  result** (owner's choice): the reference a matched row gets, so a
-  `--dry-run` still shows what a run would write, where its hint points, and
-  every candidate with position, tags, Wikidata item and `in_sh`. A row the
-  matcher does not own is not in it; its state is in `places.csv`. The file
-  stays a scratch file of two Python modules: it has no schema file.
-- **`curate export` reads `matches.jsonl` and `places.csv`, nothing else.** It
-  no longer streams `candidates.jsonl`, builds a second name index or resolves
-  the hints again, and has no `--candidates` option. A candidate's position
-  and tags are those of the run, never missing because the candidates were
-  rebuilt since; its name is whole (a `;` or `:` in it lost it or cut it
-  before, and 40 characters were the limit). The worklist keeps its keys;
-  `REPORT.md` still cuts a name to 40 characters.
-- **A note names a row by its id**: "… is taken by row `<id>`". The line
-  went stale with the next edit above it. `REPORT.md` keeps its `line`
-  column (#23).
-- **What the matcher gives a row holds the rest of that feature** (owner's
-  decision; the gap the #94 entry left). Of two matcher-owned rows for one
-  feature the second got a sibling object: the river's ways when the first
-  row got the relation, the municipality when it got the place node. A row
-  the run matched now holds its feature against the rows after it as a row a
-  human decided does — except against a row that finds the object only by a
-  name it merely also goes by (`alt_name` or `old_name` alone,
-  `osmtags.BYNAME_FIELDS`; the index says so with each hit, since a rank
-  cannot: an annotated `short_name` ranks like an `alt_name`): the dyke
-  Deezbüll Deich carries
-  `alt_name=Deezbülleck`, and the row of the hamlet Deezbülleck keeps its
-  node. This narrows the #94 addendum "only the exact object". The real list
-  comes out unchanged.
-- **Library code returns what it has to say.** `wikidata.countries` returns
-  its warnings and catches `requests.RequestException` and `RuntimeError`
-  only (a programming error was reported as "lookup failed");
-  `matchreport.extracts_warning` returns the warning; the command prints.
-  The report is written with `files.atomic_write`.
-- **No generated file is part of the change.** On the extracts of September
-  2026 every row gets what it got before and the worklist is the same; the
-  next run rewrites three notes of `REPORT.md` from "line N" to the row's
-  id. After the change, `curate export` needs one `frasch match` run: it does
-  not read an old `work/matches.csv`.
-
-## Decided 2026-10-12: curation by concern, one action table, the rules of an action in the schema (issue #99)
-
-`curate.py` was four modules. A patch action was told apart in four places,
-what it requires was checked by hand in Python and not at all by the dev
-server, which stored entries that `apply` then refused.
-
-| was | is |
-|---|---|
-| `curate.WorkRow`, `WorkCandidate`, `Worklist`, `export` | `frasch/worklist.py` |
-| `curate.PatchEntry`, `EntryLine`, `RefusedLine`, `read_patch`, `patch_lines`, `schema_problem`, `_take_snapshot`, `append_back`, `restore_patch` | `frasch/patch.py` |
-| `curate.owner_problem`, `decide`, `decide_local`, `_decide_entry`, `_decide_row`, `decision_text`, `curation_name` | `frasch/decisions.py`: `owner_problem`, `ACTIONS`, `Decision`, `curation_name` |
-| `curate.apply`, `_apply` (56 lines), the command | `frasch/curate.py`: the command, and `apply` as a transaction of short steps |
-| `curationlist.read_bytes`, `appended` | `curationlist.read_for_appending` → `Appendable` |
-| `candidates.SH_SRC`, the `-latest` split in `build_candidates` | `candidates.source`, `candidates.is_sh` |
-
-- **An action's fields are stated once, in the schema.**
-  `curate-patch.schema.json` has a branch per action that names the fields
-  the action needs and the only others it may carry (owner's choice: its own
-  fields only — an `osm` entry with a `polygon_km2` is refused, a `clear`
-  carries nothing):
-
-  | action | needs | may carry |
-  |---|---|---|
-  | `osm` | `osm` | `wikidata`, `note` |
-  | `local` | `slug`, `lat`, `lon` | `polygon_km2`, `note` |
-  | `skip` | | `note` |
-  | `clear` | | |
-
-  The branches are `allOf` of `if` / `then`, not the `oneOf` the issue
-  named: against a `oneOf` every validator tried answers "matches none of
-  the branches" instead of the rule that is broken. An action no `if` knows
-  matches none, so the `action` enum stays. A branch that fails evaluates
-  none of its fields, and `unevaluatedProperties` then reports them all as
-  well; `patch.schema_problem` and the dev server both name that error only
-  when there is no other.
-- **One table tells the actions apart.** `decisions.ACTIONS` maps an action
-  to what it makes of an entry for its row: the row's new `Reference`, the
-  curation row of a local place, the remark of its log line. It writes
-  nothing; `apply` does. `clear` is `None`: reading the patch has withdrawn
-  the decision already. A new action is one entry of the table, its name in
-  the schema's enum and its branch. What `apply` still checks is what needs
-  the lists: the row is the matcher's, the slug is free, nobody else holds
-  the object, and `osm` names an OSM object.
-- **The dev server refuses what `apply` would refuse by the schema.**
-  `POST /__curate/patch` validates the entry as it stores it against the
-  same schema file and answers 400 with the reason. It checked `id` and
-  `action` by hand before and let `polygon_km2: 0` through, which the view
-  then showed as done. The validator is `@hyperjump/json-schema`, a dev
-  dependency of `web/` (owner's choice; Ajv was turned down for its
-  maintenance, `json-schema-library` got one of eleven probe entries
-  wrong). The view's own form is unchanged: it shows the refusal.
-- **Library code returns what it has to say** (as the matcher since #98).
-  `curate.apply` returns an `ApplyReport` — rows applied, refusals with
-  their reasons, the log, the warnings — and `worklist.export` an
-  `ExportReport` (owner's choice: export too); `frasch curate` and `frasch
-  update` print them with `cli.say`. An apply that fails has no report to
-  return: what it had to say until then -- its warnings, the decisions, what
-  became of `curation.csv` and of the patch -- are notes on the error it
-  lets pass (`add_note`), which a command prints under the message
-  (`errors.text`). The printed text is what it was, but for that: the lines
-  of a failed apply come after the error and as errors, no longer before it
-  on the standard output.
-- **Smaller.** `curate.json` replaces the old file in one step; the dev
-  server may be handing it out. `curation.csv` is read once by `apply`, as
-  its comment said while the code read it twice. Candidates of a snapshot
-  extract (`schleswig-holstein-260923.osm.pbf`) marked nothing `in_sh`: the
-  source was the file name up to `-latest`.
-- **Names.** Of the seven things called "decide", the four of the curation
-  are gone: two into the table, and `apply` enters a patch line into its
-  row (`_enter_patch`, `_enter_line`). `match._decide`, `match._decide_by_rank` and the
-  detail view's `decide` callback keep their names (owner's choice): each is
-  the only one of its file.
-- **No generated file is part of the change**, and nothing `apply` took
-  before is refused now but a line with a field of another action, which
-  the view never wrote.
-
-## Decided 2026-10-12: the injector by concern, every input required, a report that is returned (issue #100)
-
-`inject_names.py` was six modules in one file, and its `Injector` had five
-jobs and fifteen counters that seven print functions read from outside. A
-build without the dialect areas warned, injected for minutes, moved the
-result into place and then died in `frasch provenance` on the missing file.
-
-| was | is |
-|---|---|
-| `inject_names.NameList`, `load_names`, `scan_waterways`, `is_place_like`; `Injector._row_for`, `_member_row`, `_qid_row`, `_note_qid` | `frasch/inject/claims.py`: `Claims.row_for` → `Claim` (the row, and the object whose position says where the claimed one lies) |
-| `inject_names.square_around`, `point_tags`, `check_local`, `_PendingSquare`, `_square_with_names`; `Injector.flush`, `_add_local_points`, `_add_point_node`, `_add_square_nodes`, `_add_square_ways` | `frasch/inject/synthetic.py`: `local_places`, `SyntheticObjects` |
-| `inject_names._Inputs`, `load_curation`, `_read_curation`, `_load_areas`, `_load_objects`, `_check_local_refs`, `scan_osm_local` | `frasch/inject/inputs.py`: `Inputs`, `load_inputs` |
-| the counter and record attributes of `Injector`; the tuples `added_points`, `created`, `skipped_carriers` | `frasch/inject/stats.py`: `Stats`, `AddedPoint`, `AddedSquare`, `SkippedCarrier` |
-| `inject_names._print_report` and the seven `_print_*` | `frasch/inject/report.py`: `input_lines`, `result_lines`, `Report` |
-| `writer is None` for a dry run, asked in six places | `frasch/inject/writer.py`: `copy_of` → the writer, or a `DryRun` that writes nowhere |
-| `inject_names.Use`, `--no-areas`, `--no-curation` | gone |
-
-- **A package, and the command next to it** (owner's choice): `frasch/inject/`
-  is the first sub-package of `frasch`; `frasch/inject_names.py` stays the
-  command (`run`, `main`) and holds `Injector(writer, inputs, stats)`, whose
-  work is `handle`: ask the claims, take the row's tags or OSM's `name:frr`,
-  then the curation's, hand a square to the synthetic objects, write. #98 and
-  #99 chose flat modules; here the parts are of use to the injector alone.
-- **`Stats` has its own module**, not `report.py` as the issue planned: the
-  claims and the synthetic objects write it, the report reads it together
-  with the inputs, and the inputs import the claims. In `report.py` it would
-  make `claims` and `report` import each other.
-- **Every input is required** (owner's decision): the name list, the dialect
-  registry, the dialect areas, the objects file and the curation, the five
-  `frasch provenance` stamps. `load_inputs` stops on a missing one before the
-  extract is read and before the output is opened, and names it. A tile build
-  without dialect areas is not wanted, so "the default file is optional, a
-  named one required" is gone -- it compared a raw string for the curation
-  and an absolute path for the areas, so with `build.sh`'s relative paths the
-  curation was always required and the areas never. `AreaIndex.from_geojson`
-  stops on a missing file itself, as `read_objects` does; the search index
-  dropped its copy of that check. The search index still reads an absent
-  `curation.csv` as "no local places" (`curationlist.local_points`).
-- **`build.sh` stamps before it injects**: `frasch provenance` runs first, so
-  the build ends at once on a missing name file.
-- **`run` returns its report; nothing below `main` prints** (owner's
-  decision, as #98 and #99 for the matcher and the curation):
-  `inject_names.run` returns a `Report` -- the `Stats` and the log, a line
-  each -- and `main` prints it with `cli.say`. The price the owner accepted:
-  the lines about the inputs appear after the scan, no longer before it.
-- **The local places are tagged once, while loading.** `check_local` computed
-  the tags of every local reference without the dialect areas to validate
-  them, and `Injector._add_local_points` computed them again with the areas.
-  `synthetic.local_places` does it once, with the areas, and the result is
-  part of the `Inputs`.
-- **One spelling of a reference in the report**: `node/6`, `way/12`,
-  `relation/20` through `refs.format`, also for the QID carriers, the curated
-  objects, the curation rows the extract lacks and the corner nodes of a
-  square (`n/6` and `nodes 7..10` before).
-- **The `name:frr` pre-pass leaves out what a row holds by reference**: those
-  objects have their `name:frr` in the objects file, and the main pass threw
-  the located copy away. Its line of the report counts the others, "no row
-  holds by reference": 202 on the Schleswig-Holstein extract, of the 397 it
-  located before. 167 of them get the name; the rest a row claims after all,
-  by its QID or as a member way of a river.
-- **The tags written are what they were.** On the Schleswig-Holstein extract
-  of September 2026 (17.3 million objects) the injected file is byte for
-  byte the one the code before the change writes, and the report differs in
-  the lines named here alone.
-- The test seams stay `inject_names.run` and `frasch inject`; the tests of
-  `square_around` and `scan_waterways` moved with their functions. Splitting
-  the two long report tests into statistics and formatter, which `Stats` now
-  allows, is #111.
-
-## Decided 2026-10-13: one geometry read; the dialect areas are a pure build (issue #101)
-
-`locate` and `build_dialect_areas` shared `osmscan` and `osmgeom`, but each
-wrote the read itself: relations by id, their ways and the referenced ones,
-all their nodes, projected to three mappings that travelled as three
-positional arguments. `build_dialect_areas` computed, printed and wrote in
-the same functions.
-
-| was | is |
-|---|---|
-| the three passes in `locate.locate_in` and in `build_dialect_areas._scan_extract` / `_read_geometry`; `_Geometry` | `osmscan.read_geometry(pbf, refs, extra_relations)` → `Geometry(relations, ways, nodes)`, the records with their tags |
-| "ask the next extract for what is still missing" in `locate.locate` and in `build_dialect_areas` | `osmscan.across(pbfs, refs, read)` |
-| `build_dialect_areas.read_admin_relations`, a raw `FileProcessor` scan | `osmscan.relations_where(pbf, wanted)` |
-| `osmgeom.polygons_for(ref, rel, ways, nodes, problems)` → a list of 0 or 1 | `osmgeom.polygon_of(ref, geometry, problems)` → the polygon or None |
-| `build_dialect_areas.build(ws, reg, pbfs, options)`, which read, scanned, printed and built | `scan(pbfs, claimed, unassigned_ags)` → `Scan`; `build(rows, reg, found, source, options)` → `Areas`, pure; `run` prints and writes |
-| `read_areas` → two indexes by reference and the rows | the rows |
-| `--simplify`, `--parts-simplify`, `--unassigned-ags` | gone (owner's decision: nothing passed them); the values stay fields of `Options` |
-| `{i for t, i in refs if t == "r"}` in four places | `refs.ids_of(refs, "r")` |
-| `111.32` in the injector and in `build_dialect_areas` | `geo.KM_PER_DEGREE` |
-
-- **`build` is pure**: it reads no file, writes none and prints nothing. What
-  there is to say is the `report` of its result; `scan` gives a line per
-  extract the same way. `run` prints both with `cli.say` and writes, as
-  `locate.run` and `searchindex.run` do for the other outputs of the
-  pipeline's table.
-- **The references without geometry are listed once** (owner's decision):
-  on stdout, in the report. A refused build's error is one line that points
-  at the list and names `--allow-missing`; before, the list was printed and
-  then raised again with the same text.
-- **Every part goes through one helper**, assigned or not (`_part_feature`),
-  and through the same union of its polygons -- also a municipality no row
-  claims, which has only one. The union says where a polygon's rings start,
-  and that decides which vertices simplifying keeps: without it 13 of the 71
-  unassigned municipalities of the parts file came out differently.
-- **The files are what they were.** On the Schleswig-Holstein and Denmark
-  extracts of September 2026 `dialect_areas.geojson`,
-  `dialect_areas_parts.geojson` and `osm_objects.json` are byte for byte the
-  ones the code before the change writes. The scan's line counts a few more
-  nodes, the label nodes of the relations, which `read_geometry` reads for
-  `locate`.
-- **`across` hands every extract the references still missing**, also an
-  empty set, which reads nothing. So the scan for unclaimed municipalities
-  still runs on every extract.
-- **A reference counts once**: `claimed_by(rows)` is the one mapping from a
-  reference to its row, for the scan, the dialects and the list of what is
-  missing. A reference written twice on one row (`way/1; way/1`, which
-  `area_rows` accepts, #130) is one object, as it was.
-- **A named rounding constant per file**, the values unchanged: the objects
-  file and the candidates 6 decimals, the search index and the area GeoJSON
-  5. That `round_geojson` rounds nothing is #50.
-- **What the comments claim about memory**: `osmscan` and `locate` said the
-  dev machine has no memory for a location cache of a whole extract, while
-  `build_candidates` builds one in the same `update`. They now say what is
-  known: the three passes take neither such a cache nor pyosmium building
-  every area. Nobody measured what a cache would cost.
-- `locate._inside_point` catches shapely's `GEOSException`, no longer
-  `Exception`; shapely is imported at the top of `dialect_areas`, `osmgeom`
-  and `build_dialect_areas`.
-- The test seams: `osmscan.read_geometry`, `relations_where` and `across`
-  on small written extracts, `osmgeom.polygon_of` on a `Geometry` in memory,
-  `build_dialect_areas.build` on a `Scan` of shapely polygons; the tests of
-  `build_dialect_areas.run`, `frasch areas` and `locate.run` stay.
-
-## Decided 2026-10-13: one slug rule, one reader of an `osm` cell in the browser, the Wikidata pattern from the schemas (issue #102)
-
-A row id and a `local/<slug>` reference share one pattern but were folded by
-two rules: `placelist.slug` (ü → u, `schorkewarw`) for the ids, the curation
-view's own `slugify` (ü → ue, `deezbuell-burg`) for the local references. The
-browser read an `osm` cell in four places and built the OSM URL in two, and
-`check_tiles` parsed references as strings.
-
-| was | is |
-|---|---|
-| `slugify`, `SLUG_CHARS` in `web/src/dev/curateWorklist.ts` | `slug_suggestion` of a worklist row, computed by `placelist.slug` in `frasch/worklist.py`; the browser folds no name |
-| the folding described nowhere | `$defs.slug` of `names/curate-patch.schema.json` |
-| `names.osmUrl`, `AreaPanel.osmRefs` and its URL template, the split in `entryLookup`, the reference patterns in `parseRefs` | `web/src/osmRef.ts`: `osmRefs(cell)`, `osmUrl(ref)`, `parseOsmRef(text)`; `parseRefs` keeps the split of typed text, which also separates by newline and comma |
-| `split(";")` / `startswith("local/")` in `check_tiles`, a retyped type table in `test_consistency.py` | `refs.parse`, `refs.local_of`, `refs.format` |
-| `/^Q\d+$/` in `names.ts`; `^(Q[0-9]+)?$` in the patch schema, with an `id &&` beside it | `names.ts` reads the pattern of `search-index.schema.json`, `curatePatch.ts` that of the patch schema, both `^Q[0-9]+$`; a decision without an id leaves the field out |
-| `Q\d+` and `(node\|way\|relation)/\d+` in Python, which also take non-ASCII digits | `[0-9]+` in `placelist.WIKIDATA_ID` and `refs.parse` |
-
-- **`local/` slugs follow the row-id rule** (owner, 2026-10-05). Row ids stay
-  as they are, so share links keep working.
-- **The existing slugs were renamed** (owner, 2026-10-13): the 34 that were
-  the old fold of their German name are now `placelist.slug` of it
-  (`local/gruenhoern` → `local/grunhorn`), in `places.csv` and `curation.csv`
-  together; the hand-chosen `hoern-enge` became `horn-enge`,
-  `westerheide-amrum` stays. A link from before the row ids that names one
-  of the old `local/` references no longer resolves; links by row id do.
-- **The suggestion is the plain slug**, the German primary name first (as
-  the view did before), not made free against the slugs in use: `curate
-  apply` refuses a taken one, as before.
-- **`osmUrl` takes one reference.** "The first of several" is the caller's
-  `osmRefs(cell)[0]` (`placeOsmRef`).
-- **The schema is in the production bundle.** `names.ts` imports
-  `search-index.schema.json` (5 kB) for the one pattern; accepted for having
-  the pattern typed once per contract.
-- **Not touched**: `nameindex._UML`, the transliteration the matcher compares
-  names by. It is not a slug rule.
-
-## Decided 2026-10-13: one selected-place model and one URL module in the public app (issue #103)
-
-"The selected place" was spread over three hooks with three entry points and
-two queues of the same kind (a ref set in a handler, consumed in an effect),
-and the URL was read in five modules and written in three. Four bugs came
-with it: a pending `?place=` link replaced a card opened while the name list
-loaded; `?place=` left the address bar for one render when the list arrived;
-the marker kept the name of the view it was set in; and two unmemoized
-callbacks re-ran the link's effect on every render.
-
-| was | is |
-|---|---|
-| `selectEntry(entry, name)`, `selectFeature(feature, at)`, `openLinked(entry, hasViewport)`; `PickedPlace`, `names.PlaceSelection` | `web/src/placeSelection.ts`: `PlacePick` = `{via: 'map', ref?, props, featureId, at}` \| `{via: 'search', ref}` \| `{via: 'link', ref, keepViewport}`, `PlaceSelection = {pick, entry}`; `usePlaceSelection` → `select(pick)`, `close(means)` |
-| `useMoveAfterCard`, `useCardFocus` (`focusNextCard`, `closeByKeyboard`) | one layout effect per pick in `usePlaceSelection`: the map move and the focus follow from `pick.via` |
-| `useLinkedPlace`, and `selection?.entry?.id ?? linkedPlace` in `App.tsx` | the link is the initial pick; `?place=` is written by `usePlaceSelection` |
-| `MapViewHandle.showMarker`, `clearMarker`, the marker argument of `flyTo`; `name` in `SearchPanel`'s `onSelect` | `marker` prop of `MapView`, `placeSelection.markerOf(selection, view)` |
-| `urlState.ts`, `queryParams.ts`, `hooks/useUrlSync.ts`, `dev/useDeepLinkParam.ts` | `web/src/url/`: `queryParams.ts`, `linkState.ts`, `useOpenLinked.ts` |
-| `lng: labelOption(initialView()).uiLanguage` in `i18n.ts`, `i18n.changeLanguage` in `useView`'s handler | `useUiLanguage(view)`, one effect, used by `useView` and the dev app |
-| `cardEntry(selection)`, `placeOsmRef(selection)` | `cardEntry(entry, props)`, `placeOsmRef(entry, featureId)` |
-
-- **The link is the initial pick** (owner's decision). The plan named both
-  "the initial pick is read from the URL" and one `useOpenLinked` for the
-  public app and the dev panels; the two do not fit. `usePlaceSelection`
-  starts with `{via: 'link', ...}`, read at mount, before the map writes a
-  hash of its own. There is no card until the name list has the entry, and a
-  pick by hand replaces the pending link for good. `close` closes a card
-  and nothing else: a click on the bare map while the list loads leaves the
-  pending link to be opened. `useOpenLinked` (the
-  renamed `useDeepLinkParam`) serves the two dev panels alone; their own
-  selection handling is #106.
-- **`?place=` has one source**: the entry's id, or, while the list is not
-  there to look it up in (loading or failed), the pick's own reference. So a
-  label clicked before the list loads is in the address bar at once, and a
-  link to a place the list does not have leaves it once the list is there.
-- **`window.location` is read in one module, literally** (owner's decision):
-  `url/queryParams.ts` also has the page's URL for the share button and
-  `config.siteUrl`, `main.tsx`'s `?curate` / `?areas`, and the hash restore
-  around `map.remove()` (`keepingHash`). A test scans `src/` for
-  `window.location` and `window.history`. MapLibre's own `hash: true` stays.
-- **`PlacePick`, not `Pick`**: `Pick` is TypeScript's own utility type.
-- **The card is measured in one file** (owner's decision):
-  `hooks/useSheetHeight.ts` keeps `--sheet-height` and exports
-  `sheetInset(card)`, the card's height where it is the phone's bottom sheet,
-  for the map move. An exported function, not the hook's return value: the
-  hook needs to know whether a card is open, which the selection hook says,
-  and the selection hook needs the reader.
-- **The marker is recreated, not moved**, whenever its prop changes; a click
-  on a label has none, as before.
-- **The UI language follows the view before paint** (`useLayoutEffect`), so a
-  page that opens in another view than the default never shows the default's
-  language first. The dev views take the view from the link through the same
-  effect and still write neither `?view=` nor `?place=`.
-- **Test seams** (owner's decision): the selection through `<App />` with the
-  map stubbed, the stub recording the `marker` prop and the `flyTo` /
-  `reveal` calls (`App.selection.test.tsx`); the URL through
-  `url/queryParams`, `url/linkState`, `url/useOpenLinked` and `useView`. The
-  writer mechanics are tested once, in `queryParams.test.ts`. The marker
-  itself is MapLibre's: the smoke test looks for it.
-
-## Remaining open questions
-1. Hosting provider for the site (R2 + Pages proposed, nothing set up yet); the tiles are GitHub release assets for now (issue #28).
-2. When to do the planet build (needs the VM; only after the North Frisia build looks right).
-3. Whether to also push confirmed names to OSM `name:frr` (separate track; import guidelines).
-
-## Name-mapping pipeline (built 2026-09-15)
-
-Scripts in `names/` (see `names/README.md` for the workflow; since #91 they are the commands of `frasch`, see the 2026-10-06 entry): `placelist.py` (reads/validates `places.csv`, shared); `build_candidates.py` (one pyosmium pass over the SH + DK extracts, ~8.5 min, 182k candidates); `match.py` (exact match after normalisation, no fuzzy matching; fills empty `osm`/`wikidata` cells of `places.csv` and marks them `status=auto`; writes `names/work/matches.jsonl` (until #98: `matches.csv`) with the details and `names/REPORT.md` as the hand-review worklist); `tiles/inject_names.py` (tags the PBF). Keys: OSM reference `type/id` (several allowed for split rivers/dykes) plus the Wikidata QID where the object has one; countries via Wikidata only.
-
-First run: 825 place rows → **437 matched, 41 ambiguous, 340 not found**, 7 not places. Settlements 225/334 matched; Köge 25/87; Warften 117/276; waters 24/45; islands 26/41; Harden 0/8; countries 12/12. 447 objects tagged in the SH extract (Denmark rows resolve once a DK-covering build exists). 34 matches spot-checked by hand, all correct; all 59 location-hinted matches verified geometrically.
-
-Data-quality findings:
-- Harden do not exist in OSM at all; most Köge only as street/Sielzug names or not at all (Gotteskoog has no polder object). These need either OSM edits or a separate overlay layer.
-- Warften are `place=isolated_dwelling|hamlet` nodes or `landuse=residential|farmyard` ways; ~100 exist only as building/street names.
-- Vanished Halligen (Bohnen-, Hasen-, Pohns-, Schweine-, Großhallig, Christianshallig) are not in OSM.
-- 16 rows carry a name in another dialect (Sölring, Halunder, Öömrang); they were flagged `name_source=other_dialect` and **not injected** as Mooring. *Superseded 2026-09-16: every dialect has its own column and its own `name:*` tag, and a row is matched and injected whichever column its name is in.*
-- 10 rows land on the same OSM object twice (Mooring + older spelling); the first row wins, the injector warns, REPORT.md lists them — the owner should `skip` one of each pair.
-
-Manual review workflow: edit `names/places.csv` — write the `osm` reference (`node/123`), optionally `status=ok`, or `status=skip`; `match.py` only rewrites rows with `status=auto` or with empty `osm`+`wikidata`, so hand-filled rows are never touched and `git diff` after a run shows exactly what it proposed.
-
-Open questions for the list owner (from the first run):
-1. Other-dialect rows: inject as Mooring, or hold for their own dialect column?
-2. Duplicate pairs: which spelling goes on the map?
-3. Harden / Köge without OSM objects: add to OSM or carry as an overlay?
-4. `Hesbüll Feld???`, `Jacobswarft (wo?)`, `FInland` typo, `Garding, Kirchspiel` vs `Garding`.
-5. Rows whose location hint contradicts the only OSM candidate (e.g. `Morsum (Nordstrand)` vs Morsum on Sylt).
-6. 5 rows with a German name but no Frisian name.
-
-## Legal requirements
-- Show "© OpenStreetMap contributors" and "© OpenMapTiles" on the map.
-- ODbL applies to published databases derived from OSM.
-
-## Development environment notes (WSL2)
-- **JDK 21** (Temurin) installed user-locally at `~/.local/opt/jdk-21*` (no sudo in this shell); `tiles/build.sh` finds it automatically.
-- **Python**: `uv` at `~/.local/bin/uv`; `uv sync` creates the project venv `.venv` (Python 3.12) from `pyproject.toml` / `uv.lock` (osmium, shapely, requests; pytest, ruff (lint and format) and mypy -- strict, tests included -- for development), see the root `README.md`. System Python 3.14 has no pip/venv.
-- **pmtiles CLI** at `~/.local/bin/pmtiles` for inspecting archives.
-- Docker is not needed with Planetiler.
-- **Node v24.21.0 (LTS, npm 11.19.0)** installed in WSL via nvm 0.40.7 and set as the default (`lts/*`). Pin the version in `.nvmrc` once `web/` is scaffolded. Note: a Windows Node install exists at `/mnt/d/Program Files/nodejs/`; make sure WSL shells use the nvm one.
-- **Docker is not available in WSL**; enable Docker Desktop WSL integration or install Docker Engine.
-- Planetiler requires Java 21+.
-
-## Next steps
-1. Hand-review the *ambiguous* / *not found* rows in `names/REPORT.md`; write `osm` references (and `ok`/`skip`) into `names/places.csv`.
-2. Run `tiles/build.sh schleswig-holstein`, open the web app, check labels.
-3. Translate the UI strings in `web/src/locales/frr-x-mooring.json`.
-4. Choose hosting; first deployment of the SH build.
-5. Extend name matching to Denmark tiles (Rudbøl, Rømø, Tønder …) and country names via Wikidata.
-6. Planet build on a rented VM.
-
-## Decided 2026-10-14: `names/` by concern, a pure card model, a tile's `name_de` is no German name (issue #104)
-
-`web/src/names.ts` held six concerns, the search index lived in a component
-next to a second id → entry map, and the place card computed its headline
-label and its lines inline, decoding a `source` string three ways.
-
-| was | is |
-|---|---|
-| `names.ts` | `web/src/names/`: `entry.ts` (the types), `load.ts` (the only one that imports React), `tile.ts`, `resolveName.ts`, `card.ts`, `cardNames.ts`, `links.ts`, `search.ts` |
-| `ShownName.source: string` (a dialect tag, `local`, `frr`, `nds`, `de`, `da`, `osm`) | `NameSource`: `{kind: 'dialect', tag}` \| `{kind: 'local', dialect?}` \| `{kind: 'language', language}` \| `{kind: 'unknown'}` |
-| the headline label and the line rules in `PlaceCard.tsx`; `cardEntry(entry, props)` | `cardModel(selection, view)` → `{headline, source, note?, kind?, lines}`; `PlaceCard` maps a source to a label |
-| `chainStep` and `entryFromTile`, the same mapping written in both directions | one table tile key → field in `names/tile.ts` |
-| `CardEntry extends NameEntry`, a tile's card with `id: ''`, `lon: 0`, `lat: 0` | `NameEntry` is the exporter's fields; `CardNames` (no id, no coordinates) is what a card reads |
-| `IndexedEntry`, `createSearchIndex`, `search`, `byId` in `SearchPanel.tsx` | `names/search.ts`: `createSearch(entries)` → `search(query)`, returning the entries |
-| `NamesData.entries` | `NamesData.search`, next to `find` |
-| `SearchPanel` | `ControlBar` = `SearchBox` + `ViewSelect` + `ShareButton` |
-
-- **A tile's `name_de` is not a German name.** OpenMapTiles writes it on
-  every feature: `name:de` where OSM has one, the plain `name` everywhere
-  else. The card read it as the German name, so every place the list does not
-  have was labelled "Deutsch", a Danish hamlet among them (Kalleshave). In
-  `tiles/data/schleswig-holstein.pmtiles`, place layer, zoom 14: 4,934
-  distinct features, 4,301 of them without `name:de`, and `name_de === name`
-  on every one of those. The table of tile keys does not have `name_de`.
-- **A generic name in no known language** (owner's decision): the headline
-  gets no language label, and a generic name that is not the headline is not
-  shown at all. No new UI string. Where `name` equals the place's `name:de`
-  or `name:da`, the language is still named. The cost: 153 of the features
-  above have `name:nds` and no `name:de` (110 with another word than `name`);
-  in the local view their card shows the Low Saxon name and no longer the
-  generic one, which it used to list as German.
-- **A place without any name** resolves to an empty name of unknown source,
-  where it reported German.
-- **A clicked label's local name is its own object's** (issue #89, owner's
-  decision to fix it here): the local name and the dialect area come from the
-  tile feature alone. The entry's serve a card opened from search or a link.
-- **The table of tile keys is written by hand**, as the frontend's copy of
-  `placenames.TILE_KEY` plus OSM's own name keys. Nothing generates it or pins
-  it to the Python table.
-- **The search index is built at load**, next to `find` (owner's decision),
-  so `ControlBar` only composes. Its documents are numbered by the entry's
-  position in the list, which is why a hit needs no second map to its entry.
-- **The merge of entry and tile is internal** (owner's decision): the tests
-  sit on `cardModel`, `resolveName`, `createSearch`, `entryLookup`,
-  `parseNames` / `useNames` and the link helpers; `PlaceCard`'s tests cover
-  what each source is called.
-- **Old links**: `entryLookup` resolves a row's OSM reference, its QID and
-  `<ref>#<csv line>` as before. That two rows may claim one object, the first
-  winning, is gone: `placelist` refuses such rows since #94.
-- **The 120 lines** of the issue are read as a limit on the modules of
-  `names/`, not on their test files. `cardNames.ts` exists for it.
-
-## Decided 2026-10-14: `web/src` by concept, `config.ts` split, one word for the view (issue #105)
-
-`web/src` was grouped by file kind (`hooks/`, `components/`, `style/`, the
-rest flat), and not consistently. `config.ts` mixed the site's base path, the
-tile hosting, the dialect registry and the selector's options, and because it
-read `import.meta.env` at module level the glyphs check of the build loaded it
-through a nested Vite runner. The selector's concept had four names (view,
-label option, tag, dialect), and `Map.tsx` set the whole map up in one
-90-line effect.
-
-| was | is |
-|---|---|
-| `components/`, `hooks/`, `style/`, `labelChain.ts`, `oncePerFrame.ts`, `provenance.ts`, `placeSelection.ts`, `osmRef.ts`, `generated/` | `ui/`, `map/` (with `style/`), `selection/`, `dialects/` (with `generated/`), `names/osmRef.ts`; see "Source layout" in `web/README.md` |
-| `config.ts` | `site.ts` (`siteUrl`, `TILES_URL`), `dialects/registry.ts`, `dialects/views.ts` |
-| `LABEL_OPTIONS`, `LabelOption`, `labelOption`; i18n `dialect.label`, `dialect.local`; `.dialect-select` | `VIEWS`, `ViewOption`, `viewOption`; `view.label`, `view.local`; `.view-select` |
-| "every dialect plus the local view" spelled in `mapCardConsistency.test.ts` and `glyphs.ts` | `ALL_VIEW_TAGS` |
-| `runnerImport` of `config.ts` and `localize.ts` in `vite-plugins/glyphs.ts`, three exports mirrored by hand | `glyphs.ts` imports `ALL_VIEW_TAGS` and `labelLayers` (`map/style/labels.ts`); `siteFields(base)` |
-| `buildStyle(base, tilesUrl, view)` and `fraschBright as unknown as StyleSpecification` in `Map.tsx` (twice) and two tests | `map/style/index.ts`: `BASE_STYLE` (the one cast), `styleFor(view)` |
-| the mount effect of `Map.tsx` | `createMap(container, style)`, `removeMap`, `placeHitTest(map, layers)`, `useMapFailure(map)`, and a hook each for the handle, the view's style, the clicks and the marker |
-| `ensurePmtilesProtocol` in `Map.tsx`, a second `PMTiles` in `provenance.ts` | `map/pmtiles.ts`: `registerPmtilesProtocol()`, `pmtilesArchive(url)`, the instance the protocol reads tiles from |
-| `MapViewHandle` = `getMap`, `flyTo(center, zoom, inset = 0)`, `reveal` | `MapMoves` (`flyTo`, `reveal`, every argument required), `MapAccess` (`getMap`); `MapViewHandle = MapAccess & MapMoves` |
-| `column` in `dialects.json` and `DialectEntry` | left out of the export |
-| `dialects.*` in `de.json` | the registry `label` |
-| `App.css` for the whole panel | `App.css` (app and side-panel layout), `ControlBar.css`, `SearchBox.css`, `ViewSelect.css`, `ShareButton.css`, `MapView.css` |
-
-- **The German dialect names live in the registry only** (owner's decision).
-  `de.json`'s `dialects.*` repeated `label` string for string; the German UI
-  now falls back to it (it was already `defaultValue`). Mooring keeps its own
-  names, and a dialect new to the registry has a name in every UI.
-- **The handle is split, not shrunk** (owner's decision): the selection
-  depends on `MapMoves` alone, the dev views on `MapAccess`; `MapView`'s ref
-  is both. The App tests' map stub still hands `getMap` over, since the stub
-  stands in for that ref.
-- **App.css is split per component** (owner's decision). `ControlBar.css`
-  holds the bar's grid, where each widget sits in it, and the one look of its
-  two fields; it is imported before the widgets, whose sheets refine that
-  look. Screenshots of the build (desktop and phone; results, card, the local
-  view) were pixel-identical to the previous one's.
-- **The registry's `view=yes|no` keeps its name**: it now means exactly
-  "offered as a view".
-- **The #103 names stay**: `usePlaceSelection` and `placeSelection.ts`, not
-  the issue's `useSelectedPlace`; `initialView` stays in `url/linkState.ts`,
-  since it reads the link.
-- **`MapView` holds the map twice**: in a ref for the handle, whose methods
-  have to reach it in the effects of the parent's first render (the dev
-  panels draw then), and in state for the hooks that set it up.
-- **Modules the Vite config imports** (`dialects/registry.ts`, `views.ts`,
-  `labelChain.ts`, `map/style/labels.ts`) import with `.ts` extensions and
-  the JSON with `with { type: 'json' }`, as `tsconfig.node.json` checks them
-  too.
-- **Test seams** (owner's decision): `dialects/views.ts`, `styleFor`,
-  `placeHitTest` and `useMapFailure` against a small fake of the MapLibre map,
-  `pmtilesArchive`, the Python export, `siteFields`, and the German UI's
-  dialect name on the card. The rest moved with its module.
-
-## Decided 2026-10-14: a shared shell for the dev panels; areas selected by OSM reference (issue #106)
-
-The two dev views were decomposed at different levels — `AreaPanel.tsx` was
-one 449-line component, the curation view nine files — and wrote loading,
-reloading, selection, scrolling and map overlays twice. The area view kept
-its selection by `fid`, a counter the build assigns in CSV order, so a
-Reload after adding a row highlighted another municipality than `?area=`
-named.
-
-| was | is |
-| --- | --- |
-| a fetch, its error idiom and a cancel flag in each panel; Reload in the area view only, twice | `dev/shell/`: `fetchJson`, `errorMessage`, `useDevResource(load)` → `{data, error, reload, update}`; `DevPanel` takes it as one prop and has the Reload button for both views |
-| state, a ref mirror, a URL write, `useOpenLinked` and `useListNavigation` in each panel; two ways to scroll the selected row into view | `useSelection({param, keys, ready, resolve, show})` → `{selected, select, selectInPlace, itemRef}` |
-| `ensure` on `load`/`styledata`, `addHintCircle`/`removeHintCircle`/`drawHintCircle`, filters set in three places | `useGeoJsonOverlay(map, {source, data, layers, beforeId})`; the layers, filters included, are computed from state (`areaLayers({selectedOsm, shown})`, `hintCircle.ts`) |
-| `MapAccess.getMap()` and nine null guards; the panel worked because `<MapView>` came first | `MapView`'s `onReady(map)`; `DevApp` renders the panel once the map has loaded, with `map: MapLibreMap`; `MapViewHandle` is `MapMoves` again |
-| two `flyTo` helpers, zoom 14 three times | `dev/shell/mapMoves.ts`: `flyTo`, `fitTo`, `CLOSE_ZOOM` |
-| `fid` in `PartProperties`, the parts schema and file | gone; the key is a row's first OSM reference (`areaKey`) |
-| `AreaPanel.tsx` | `dev/areas/`: `AreaPanel` (container), `AreaFilters`, `AreaLegend`, `AreaDetail`, `AreaList`, `Swatch`, `areas.ts` (types, `bboxOf`, `groupByDialect`, `filterAreas`), `areaLayers.ts`, `useAreaSelection.ts`, `useAreaMap.ts` |
-| `curateWorklist.ts`, `curateMapLayers.ts`, `curatePatch.ts` | `dev/curate/`: `worklist.ts` (types, loading, filter), `refs.ts` (`parseRefs`), `pins.ts`, `hintCircle.ts`, `patch.ts` (with `decisionLabel`, the one formatter of a decision) |
-| one button style three times, three `!important`s, four list resets, `#e8f0fe`/`#2e7d32` spelled out | `DevPanel.css`: buttons under `:where(.dev-panel)` (any class rule wins), `.dev-panel-list`, `.dev-panel-rowbutton`, `.dev-panel-detail`, `--dev-panel-*` colours |
-
-- **The map comes by `onReady`, not the handle** (owner's decision): the
-  panel mounts on a loaded map, so an overlay is added once, without waiting
-  for `load`, and no dev module asks the map whether it exists yet.
-- **Reload keeps what is on screen** until the new data is there (owner's
-  decision); the selection stays on its item: `useSelection` asks the
-  reloaded data for the item's key (a rebuild that changed a row's first
-  reference moves it along) and empties the selection and the link if the
-  item is gone, so a later reload cannot bring it back unasked. Both panels
-  count as `ready` once loaded, an empty worklist included. The curation view's own saves go into the loaded data with
-  `update`, so a reload replaces them with the patch as stored.
-- **No style-rebuild handling** (owner's decision): the dev views never
-  change the view, so the `styledata` re-add, its try/catch and the
-  half-built filter restore went. An overlay's paint is fixed when it is
-  added; only its data and filters follow a change.
-- **The selected municipality is filtered by its `osm` cell**, not the key:
-  a reference is on one row only, so the cell names it as well, and MapLibre
-  compares it without splitting it. A link with any of a row's references
-  still opens it.
-- **`useOpenLinked` lost `hasSelection`** and moved into `dev/shell/`: the
-  public app does not use it, and in neither panel is anything selectable
-  before `ready`.
-- **Test seams** (owner's decision): `fetchJson`, `useDevResource`,
-  `useSelection`, `useGeoJsonOverlay` (against `testing/fakeMap.ts`),
-  `bboxOf`, `groupByDialect`, `filterAreas`, `findByRef`, `areaLayers` (which
-  municipalities each layer draws, through the style spec's own
-  `featureFilter`), `decisionLabel`, `AreaPanel` (Reload after a
-  rebuild that moved the selected municipality), `CuratePanel` (Reload, the
-  selected row kept in view; MapLibre's `Marker` replaced by a fake, since it
-  needs a real map's camera), and the parts without `fid`.
-
-## Decided 2026-10-15: one helper and the same gates for the dev endpoints (issue #107)
-
-`vite-plugins/curate.ts` and `vite-plugins/areas.ts` were one concept written
-twice, with different safety: only `curate` refused callers from another
-machine or another origin, and `areas` answered a failure with `String(err)`,
-absolute path included. Under `vite --host` the research notes of the parts
-file were readable from the local network.
-
-| was | is |
-| --- | --- |
-| `sendJson`, `isMissing`, the prefix match, the "read the file or 404 with a hint", the catch, in each plugin | `vite-plugins/devEndpoints.ts`: `devEndpoints(base, routes, {https})`, `serveFile(path, mediaType, missingHint)`, `sendJson`, `isMissing` |
-| the loopback and same-origin gates in `curate.ts` only | in `devEndpoints`, for every route of both tools |
-| `areas.ts` answering `String(err)`; a bare `forbidden` and a log line without the request in `curate.ts` | one 500 for both, `internal error, see the dev server log`; the log line names the request and holds the error. A 403 says which gate refused and why (`10.0.0.5 is another machine`, `a page of <origin>`, `Sec-Fetch-Site is none`) |
-| `'__curate'`, `'__areas'`, `'dialect_areas_parts'` typed again in `scripts/check-build.mjs` | `vite-plugins/devToolNames.ts`, imported by both plugins and the build check (Node 24 strips its types) |
-
-- **The panel title left the build check** (owner's decision): every chunk
-  with the curation panel also fetches through `/__curate/`, so
-  `'Curation review'` added no coverage, only a silent coupling to
-  `CuratePanel.tsx`.
-- **Every refusal and failure says what went wrong** (owner, 2026-10-15):
-  a dev tool's error has to hint at the cause, so the 403 names the gate
-  and what tripped it; the 500 can only point to the log, since its error
-  may hold an absolute path.
-- **The client's fetch URLs keep their literals** (owner's decision): the
-  shared names are for the plugins and the build check.
-- **Test seams** (owner's decision): the gates through both tools'
-  middlewares (`createCurateMiddleware`, `createAreasMiddleware`);
-  routing, the 404s, the 500 and `serveFile` through `devEndpoints`
-  directly; the POST's own checks stay in `curate.test.ts`. The fake
-  request and response are `vite-plugins/testHttp.ts`.
-
-## Decided 2026-10-15: the web fetch in Node, one pins module, every build check inside the Vite build (issue #108)
-
-"What the lock pins is what is on disk" was written in TypeScript and again in
-bash, and a plain `vite build` — the GitHub Pages command the README gave —
-skipped the output check, which ran after it in `npm run build`.
-
-| was | is |
-| --- | --- |
-| `scripts/fetch-fonts.sh`, `scripts/fetch-tiles.sh` (bash, `tiles/fetch.sh`, `unzip`; tests spawning bash and `zip`) | `scripts/fetch-assets.ts`, run by Node 24 as it is: `fetchTiles`, `fetchFonts`; `npm run fetch-assets` is the only npm script for it |
-| the lock parsed in `lock.ts` and by `sed` in both scripts; the sha256 shape check, the cache path and the archive name in four places | `vite-plugins/build/pins.ts`: `readTilesPin`, `readFontsPin`, `ARCHIVE_NAME`, `TILE_CACHE_DIR` |
-| "public/fonts/ is exactly the listed files" in `glyphs.ts` and `fetch-fonts.sh`; the dangling-link message in `tiles.ts` and `fetch-tiles.sh` | `glyphInstall.ts` and `danglingLinkProblems`, used by both |
-| the `tiles` and `glyphs` plugins, each with its own `root`/`VITE_TILES_URL` and `this.error`; `glyphs` relying on `tiles` to stop a build without an archive | one plugin, `vite-plugins/build/assets.ts`: one `buildStart` reports every problem at once, `writeBundle` ships the archive and then runs `checkBuild` |
-| `scripts/check-build.mjs` after `vite build` | `vite-plugins/build/checkBuild.ts`, run by the plugin; `npm run build` is `tsc -b && vite build` |
-| `useProvenanceCheck` opening a second `PMTiles` in every visitor's browser | the build compares the pinned archive's `built_from` with `names.json`'s (`vite-plugins/build/provenance.ts`) |
-| `smoke` opening `?curate` only | `?curate` and `?areas` |
-
-*Superseded 2026-10-16 (#109): `ARCHIVE_NAME` is gone; `readTilesPin` returns the archive's `name`, the last part of its `ARCHIVE_URL`.*
-
-- **A differing `built_from` warns, it does not fail** (owner's decision):
-  the archive pinned today was built from older name files than
-  `names.json`, and it is published on its own (`just publish-tiles`).
-- **The runtime check is gone, not kept for dev** (owner's decision): the
-  build covers what is deployed, `just check-tiles` a tile builder's own
-  archive. `builtFrom` left `NamesData`, `pmtilesArchive` left `pmtiles.ts`.
-- **fflate unzips the glyph zip** (owner's choice over a hand-written reader
-  and yauzl): no dependencies, maintained, and the tests build their zip
-  with it, so the host needs neither `zip` nor `unzip`.
-- **`tsc -b` stays outside the plugin** (owner's choice over spawning it in
-  `buildStart`): the README's Pages command is
-  `npm run build -- --base /frasch-koord/`; a bare `vite build` runs every
-  check but the type check.
-- **`tiles/fetch.sh` stays** for the tile build and `just extracts`.
-- **Test seams** (owner's decision): `fetchTiles` and `fetchFonts` against a
-  local HTTP server; `readTilesPin`, `readFontsPin`; `buildProblems`, every
-  problem and warning a build starts with; the plugin through a real
-  `vite build` of a tiny site with a stand-in MapLibre worker, so
-  `checkBuild` passes, for what only a build shows (what it ships, that
-  `buildStart`'s problems and warnings reach Vite, the output check);
-  `checkBuild` and `provenanceWarning` as pure functions.
-
-## Decided 2026-10-16: one extract list, every pin a lock file, the site serves what is published (issue #109)
-
-The extract regions, "missing or `REFRESH=1` → download", the archive's name
-and the listed scenarios of the place card were each written down more than
-once, and `just publish-tiles` could publish an archive `just check-tiles`
-rejects.
-
-| was | is |
-| --- | --- |
-| the extracts spelt out in the `justfile` three times, the "fetch if missing" rule in the `justfile` and `build.sh` | `extract_regions` in the `justfile`, the paths derived by `geofabrik_extract_name`; `fetch_geofabrik_extract <region> <dir> [snapshot]` for both |
-| `tiles/fetch.sh` the download core and Geofabrik's naming | `fetch.sh` the core (with a public `checksum_of`, `fetch_text`), `geofabrik.sh` Geofabrik's extracts (`GEOFABRIK_URL` overridable) |
-| eight pin constants in `build.sh` | `tiles/sources.lock`, read by `tiles/lock.sh`'s `lock_get` |
-| `publish.sh` rewriting the whole of `web/tiles.lock` with a heredoc | `lock_set` on its two `ARCHIVE_*` lines |
-| `schleswig-holstein.pmtiles` hard-coded in `pins.ts` and `site.ts`, whatever `publish.sh` uploaded | the last part of `ARCHIVE_URL` (`readTilesPin`'s `name`): the fetch links `public/tiles/<name>`, the build ships `dist/tiles/<name>`, `vite-plugins/tilesArchive.ts` hands it to `site.ts` |
-| `publish-tiles` unchecked | `publish-tiles: (check-tiles region)` |
-| the listed scenarios of `mapCardConsistency.test.ts` hand-written | `web/src/testing/generated/listedScenarios.json`, written by `tiles/tests/test_consistency.py` from its extract, which fails when it is stale (`--write-scenarios` rewrites it) |
-
-- **The archive's name comes from `tiles.lock`** (owner's choice over a
-  fixed site name and over `publish.sh` losing its region): whatever
-  `publish.sh` pins, the site serves under that name.
-- **Every pin is a lock file** (owner's decision): `tiles/sources.lock` in
-  the `KEY=value` form of `web/tiles.lock`.
-- **pytest guards the scenarios** (owner's choice over an entry of the
-  pipeline table): they are test data, not a pipeline output.
-- **The generated scenarios replace the hand-written listed ones** (owner's
-  decision): the fixture extract has a place for each; the unlisted
-  scenarios stay hand-written.
-- **Test seams** (owner's decision): `checksum_of`, `fetch_geofabrik_extract`,
-  `lock_get` / `lock_set` through a real bash; `osm_ref`, `tile_of` /
-  `lonlat`, `tile_features`; the committed scenarios against the fixture;
-  `readTilesPin`'s `name`, `fetchTiles`' link. `publish.sh` (it calls `gh`)
-  only through shellcheck and `lock_set`.
-
-## Decided 2026-10-16: the public site's colours as tokens, one panel surface, one close button (issue #110)
-
-Every panel spelt out its white, its shadow, its radius, `#222` and
-`color-scheme: light` (against `index.css`'s `light dark`) again; the ×
-was styled from the card's `.place-card-close` and from `.map-error button`;
-the bracketed note was written twice. On a phone the map error strip ignored
-the notch and, placed by `left: 50%`, could only be half the screen wide.
-
-| was | is |
-| --- | --- |
-| colours, shadows and the panel radius in every stylesheet | tokens on `index.css`'s `:root` (`--surface`, `--text`, `--muted`, `--border`, `--divider`, `--hover`, `--link`, `--error`, `--error-surface`, `--shadow`, `--sheet-shadow`, `--radius`); `theme.test.ts` keeps colours out of the other public stylesheets |
-| a white, shadowed, rounded box in five rules | `.panel` (`index.css`): the control bar, the place card, the panel error, the map error strip, the dev panels |
-| `color-scheme: light dark`, overridden by every panel | `color-scheme: light` on `:root` |
-| `font-family` on four panels | `body`'s |
-| `.place-card-close`, `.map-error button` and a phone override | `ui/CloseButton.css`; `CloseButton`'s `inCorner` for the top right corner of a panel, in place of `className` |
-| `.search-result-de` and `.place-card-note` with their own brackets | `.parenthetical` (`index.css`) |
-| `.app .maplibregl-ctrl-bottom-left` | gone: there is no bottom-left control |
-| the phone `.map-error` at `--bar-inset + --bar-height + 8px`, centred by `left: 50%` | `+ var(--safe-top)` (`layout.test.ts`: whatever sits below the phone bar clears the notch); centred by its insets, on a phone from the bar's left edge to the zoom buttons (`--map-controls-width`) |
-| the stylesheet glob in `layout.test.ts` | `src/testing/stylesheets.ts`: the stylesheets without comments, their declarations |
-
-- **Near-duplicate colours are merged** (owner's decision): one `--divider`
-  for every rule line (was `#eee` and `#f0f0f0`), the share icon in `--text`
-  (was `#444`), one `--error` for the search error line and the map error
-  strip (was `#a1260d` and `#7a1c14`).
-- **The dev panels share the surface only** (owner's decision): `.panel`,
-  `--surface` and `--text`; their greys stay in `DevPanel.css`, and
-  `theme.test.ts` leaves `dev/` alone.
-- **The × is muted grey everywhere** (owner's decision), the error strip's
-  too, and the bigger phone size applies to every one of them.
-- **The map error strip's width** was fixed along (owner's decision); on a
-  phone it keeps clear of the zoom buttons, which sit at its height.
-- **Test seams** (owner's decision): the stylesheets read as text, in
-  `layout.test.ts` (the notch) and `theme.test.ts` (no colour literals; a
-  colour name is what jsdom takes for one). The look was checked by
-  screenshots of the build before and after (desktop and phone: bar,
-  results, card, share, map error); the differences are the merged colours,
-  the error strip's × and its width.
-
-## Decided 2026-10-18: tests that check one thing, once, on data of their own (issue #111)
-
-- **No text I/O relies on the locale** (owner's decision): every text-mode
-  open, `read_text`/`write_text` and `subprocess` call names its encoding.
-  `check-python` runs pytest with `PYTHONWARNDEFAULTENCODING=1`, and pytest
-  turns `EncodingWarning` into an error, so CI fails on the next one.
-- **`check-inputs` reports a `places.csv` not in the pipeline's form**
-  (owner's decision): a byte order mark, a blank line, Windows line ends,
-  quotes or spaces that the next write by the matcher or the curation would
-  drop. It names the first line that differs, and `--fix` writes the list in
-  that form. This replaces the test that round-tripped the real
-  `names/places.csv`. A spreadsheet's BOM, which used to be fine, is now
-  reported.
-- **Reports are tested as values and per section** (owner's decision): no
-  test compares a whole multi-line report. The inject report
-  (`test_inject_report.py`, from hand-built `Inputs` and `Stats`), the area
-  build, `REPORT.md` and the curation log are checked one fact per test; what
-  a run counts is asserted on its result (`Report.stats`, `Areas`, `Parts`).
-- **Each rule is tested where it is made**: `test_tables` (BOM, `;`, cell
-  count), `test_dialects` (registry rows), `test_curationlist`,
-  `test_placelist_read` (ids). `check-inputs` and the other readers keep one
-  test of the wiring each.
-- **One home for shared fixtures**: `osm_fixture` (`box`, `areas_geojson`,
-  `U_SHAPE`, `read_extract`), `conftest.run_matcher`, and on the web side
-  `vite-plugins/testDir.ts`.
-- **The fixture registry keeps its 8 dialects** (owner's decision); it is
-  independent of `names/dialects.csv`.
-- **One deliberate exception** (owner's decision): `areaLayers.test.ts` fails
-  when a dialect is added without a colour in the area review view's
-  `DIALECT_COLORS`. Every other test passes with a dialect added.
-
-## Decided 2026-10-18: the sweep of dead code, style leftovers and stale text (issue #112)
-
-Every item of the 2026-10-05 review was checked again against `main`; what
-each became is in the issue's spec comment. The ones that change how
-something works:
-
-- **Name layers are marked** (owner's decision): a symbol layer that labels
-  a feature by its name carries `"metadata": {"frasch:label": true}` and
-  `["get", "name"]` as its text-field in `frasch-bright.json`; `labelLayers`
-  rewrites marked layers only. It used to rewrite any text-field whose
-  string contained `name`, which is why the file kept 27 legacy templates
-  such as `{name:latin}\n{name:nonlatin}`.
-- **The style file names no URL**: the source URL, sprite and glyphs of
-  upstream's hosting (MapTiler, GitHub Pages) are gone, as `styleFor` always
-  set its own; so are the Mapbox Studio metadata, the camera and
-  `visibility: visible`. A test keeps URLs out of the file.
-- **Layers for the planet stay** (owner's decision): `highway-shield-us-*`,
-  `landcover-glacier`, `landcover-ice-shelf`, `place-continent` and
-  `place-country-*` match nothing in Schleswig-Holstein but do on the planet
-  build that launch needs.
-- **No `housenumber` and `mountain_peak` in the tiles** (owner's decision):
-  `tiles/build.sh` passes `--exclude_layers=housenumber,mountain_peak`, as no
-  style layer reads them (279 451 house numbers in the 2026-10-03 archive).
-  It takes effect with the next published archive (#140).
-- **Old `?place=` links** (owner's decision): `entryLookup` still finds an
-  entry by any of its OSM references and ignores a `#<line>`; the QID keys
-  are gone, as no entry of `names.json` lacks an OSM reference.
-- **`frasch dialects --columns` is gone** (owner's decision), as are the kind
-  names `farm`, `islet`, `locality`, `county`, `municipality` and `region`
-  (owner's decision): no row and no place class of the archive has them.
-- **`errors.Invalid` takes the reason alone**: no production call passed a
-  location to `refs.parse`, `parse_point` or `parse_set_tags`; every reader
-  names the file and line of the row itself.
-
-## Decided 2026-10-19: new places from the curation view (issue #113)
-
-The curation view creates places the list does not have yet; the spec is the
-issue's comment. What it settled:
-
-- **A `create` carries its names as an object** (owner's decision):
-  `"names": {"mooring": …, "de": …}`, only the cells that are not empty, so the
-  patch schema need not list the dialect columns of `dialects.csv`; `apply`
-  refuses a column the name list does not have. The top-level `kind` of a
-  `create` is the new row's.
-- **A provisional key, two slots under it**: until `apply` the place is
-  `new:<random>`, a shape no row id can have. Its `create` and its decision are
-  entries of their own, each with its last line; **`discard`** (owner's
-  decision: a new action, not a flag) withdraws the place and its decision,
-  in `read_patch` and `append_back` alike.
-- **A place is applied whole or not at all** (owner's decision): if its
-  `create` or its decision is refused, both are, and both go back into the
-  patch under the key, where the view still shows the place.
-- **No owner rule for a created row**: its decision is applied also when it
-  has no Frisian name — a row with a reference and no label, which
-  `check-inputs` accepts and which the objects build, `check-outputs`, the
-  search index and the injector leave out (`on_map`, tested through
-  `placeobjects.named` and the search index). Rows of `places.csv` keep `owner_problem`.
-- **Where the row goes**: after the last row of its kind, at the end when none
-  has it; the rows below it are logged at the lines they move to.
-- **The view** lists created places apart, above the worklist, and does not
-  hide one that is decided (owner's decision). The duplicate warning compares
-  every variant typed, remarks left out and case ignored, with every name cell
-  of the rows and of the other new places (owner's decision); `export` writes
-  every row's names for it (`places`) and the Frisian name columns
-  (`name_columns`). A label click starts the German name with OSM's plain
-  `name` when the object has neither `name:de` nor `name:da` (owner's
-  decision).
-- **One list of label layers**: `PLACE_LAYERS` moved from `MapView.tsx` to
-  `map/style`, for the curation view's label clicks too.
-
-## Decided 2026-10-21: Low Saxon and Synnejysk, the other local varieties (issue #83)
-
-`places.csv` gets Low Saxon and Synnejysk columns, so their names can be added
-like the Frisian ones. The spec is the issue and its comments. What it settled:
-
-- **One registry of local varieties.** `names/dialects.csv` keeps its name but
-  lists the local varieties: the eleven Frisian dialects, plus `nds` (Low Saxon,
-  "Plattdeutsch") and `jut` (Synnejysk, "Süderjütisch"). A new `language`
-  column holds the ISO 639 code, `frr` for the Frisian rows. Wherever the code
-  says "Frisian" it means `language == frr`. A tag is `<language>` or
-  `<language>-x-<subtag>`, and a Frisian row needs a subtag, because a bare
-  `frr` is OSM's generic `name:frr`. The frontend gets `language` too.
-- **Their names are no Frisian names.** The `nds`/`jut` columns follow `de`.
-  A row is never named by them (id, reports, `any_name`), and the matcher does
-  not search them. *(Revised 2026-10-22, #154: never before German or Danish,
-  but not left out either; see below.)* A row whose only names they are has
-  no Frisian name and stays off the map. Only a Frisian dialect can be a map
-  view.
-- **Synnejysk is the default local language of Schleswig, Low Saxon the default
-  south of the border.** The `jut` rows of `dialect_areas.csv` cover
-  Schleswig-Flensburg, Flensburg and the Nordfriesland mainland that no
-  Frisian row claims. They are a starting point to review, each "low –
-  default from #83, unverified". A place in no area is Low Saxon, with nothing
-  to assign (owner's decisions). That covers Eiderstedt (Amt Eiderstedt with
-  Grothusenkoog, plus Tönning, Uelvesbüll and Witzwort), Nordstrand,
-  Elisabeth-Sophien-Koog, Pellworm, Friedrichstadt, the Amt Nordsee-Treene
-  villages south and east of Husum, Stapelholm, the city of Schleswig and
-  Rendsburg-Eckernförde's part of Schleswig. The review overlay scans the
-  three districts for municipalities no row claims and calls them "no row –
-  Low Saxon by default". A kreisfreie Stadt, tagged `admin_level=6` in OSM,
-  counts as a municipality. North of the border is #15.
-- **Low Saxon is one name** (owner's decision): `names.nds` = the list's, else
-  OSM's `name:nds`, in `resolve` alone. The tiles keep OSM's where the list
-  has none, as with `name:de` (#61). The search entry's separate `name_nds`
-  and the card's `card.lowSaxon` are gone, and the registry's label names it.
-- **An object no row claims carries its area** (owner's decision, review):
-  where OSM's `name:frr` is its local name (#81), the injector writes the
-  area's `frasch:dialect` next to `frasch:local` (`placenames.unclaimed_tags`).
-  So a Frisian view reads it with the Frisian-area chain, as it reads a listed
-  place, and the card calls the name the local form, not "Frisian (OSM)".
-- **OSM's fallback for the local name follows the area's language**:
-  `name:frr` in a Frisian area, `name:nds` in a Low Saxon one, nothing in a
-  Synnejysk one (OSM has no `name:jut`). So OSM's Frisian exonym never becomes
-  the local name of a Synnejysk place. *(Since 2026-11-15, #161: a fallback
-  for objects no row claims only.)*
-- **The ranking in the Frisian views**: the local name comes right after the
-  view's own dialect only in a Frisian area. Anywhere else it comes after every
-  Frisian name and `name:frr`, before `name:nds`. A Synnejysk or Low Saxon
-  name labels a Frisian view only where it is the place's local name and no
-  Frisian name is known. The style splits the chain with a `case` on
-  `frasch:dialect` being a Frisian tag, and the card asks the same of its
-  `dialect`. The local view is unchanged.
-- **The card shows every known Low Saxon and Synnejysk name** (owner's
-  decision, review): also where it is the same word as German or the headline
-  (Husum, Treen), so the reader sees that it is the same, not that it is
-  unknown. Only the headline's own name gets no line, and a Synnejysk local
-  form gets one line, the local one.
-
-## Decided 2026-10-22: one naming chain that leaves no language out (issue #154)
-
-A place the curation view created with only a Low Saxon or Synnejysk name was
-posted to the patch and listed without a name, and `frasch curate apply` would
-have given it the id `row`: `nameOf` and `placelist.new_id` tried only the
-Frisian columns, German and Danish.
-
-- **All languages are treated equally where possible** (owner's rule). Where
-  exactly one name is needed, the fallback chain goes through every language
-  and leaves none out. #83's "their names are no Frisian names" means never
-  before German, not never.
-- **One chain, `placelist.naming_columns`**: the Frisian columns, `de`, `da`,
-  then the other local varieties in registry order (`nds`, `jut`). `new_id`
-  slugs the first name along it (`row` only for a row with no name at all),
-  and the worklist exports it as `naming_columns`, so the view's `nameOf`
-  names a created place the way its id will be made.
-- `any_name` stays Frisian-only: it answers "does the row have a Frisian
-  name?", and a row whose only names are `nds`/`jut` still stays off the map.
-- The other single-name chains that still leave languages out (reports,
-  `describe`, `point_name`) are #156.
-
-## Decided 2026-10-29: the geolocate button (issue #5)
-
-- **MapLibre's `GeolocateControl`**, top right below the zoom buttons, on the
-  public map and the dev views alike (`map/createMap.ts`). One fix per tap
-  (`trackUserLocation: false`); the map fits the fix's accuracy circle, at
-  most zoom 14 (village level), and marks the position with MapLibre's dot.
-- **Its labels come from the locale files** (`geolocate.label`,
-  `geolocate.unavailable`), handed to MapLibre's `locale` map option. MapLibre
-  reads that option once and has no API to change it, so the button keeps the
-  UI language the map was created in. No selectable view switches the UI
-  language at runtime today (owner's choice: no live relabelling).
-- **Mooring strings empty** until the owner writes them (#7); they fall back
-  to German.
-- **Left out** (owner's choice): MapLibre's other control labels (zoom,
-  compass, attribution toggle) stay English, see #162; no special
-  case for the phone sheet covering the dot, or for a position outside the
-  map's area.
-- **Tested in the smoke test**, the only place with a real map: a faked
-  position, one tap, the dot shows and the URL hash lands on it at zoom 14.
-
-## Decided 2026-10-31: `just tiles` links its build for the dev server
-
-- **`tiles/build.sh` links its archive for the dev server** once it is in
-  place (`tiles/devlink.sh`): `web/public/tiles/<pinned name>` →
-  `tiles/data/<stem>.pmtiles`. Only a build whose file name is the one
-  `web/tiles.lock` pins is linked, since the dev server serves only that
-  name; another region's build says so and links nothing.
-- **`just setup` undoes it**: `npm run fetch-assets` always links the
-  pinned archive again (#169, which supersedes keeping a tile builder's own
-  link, 2026-10-03, #53). That is the owner's choice over a `--reset` flag
-  for `just setup` alone.
-
-## Decided 2026-11-01: one rule for every synthetic square (issue #168)
-
-- **A square belongs to the row's own object**, centred on it if it is a
-  node, else on the curation row's `lat`/`lon`. It replaces the object's own
-  place label (the injector drops its `place` tag), and the row's position
-  — search entry, dialect lookup, `check-tiles` — is the square's centre.
-  Oland's coastline way covers the foreshore along the rail dam, so its
-  interior point, label and search entry lay outside the Sommerdeich; it now
-  has a 2.1 km² square at the centroid of the Sommerdeich ring. Changing OSM
-  was ruled out: the foreshore is land. Nordstrand's square moved from the
-  village node to the row's own object, the municipality relation, centred
-  on the village, so its search entry is where its label is; no node has a
-  second curation row any more, and that exception is gone.
-- **One derivation of positions**: `curationlist.read` gives the local
-  references' points (`Curation.points`) and the centres of way/relation
-  squares (`Curation.centres`); the injector reads those, and the search
-  index reads `curationlist.positions`, which is built from the same two.
-  `osm_objects.json` keeps OSM's own positions.
-- **`frasch check-tiles` finds a square by `frasch:square=yes`** (owner's
-  choice), a tile attribute on every square: its way id is the injector's,
-  so nothing else ties its label to the row. A reserved id range (Planetiler's
-  node map and a jump in ids) and reading `curation.csv` in check-tiles (a
-  heuristic) were turned down. Squares were not compared at all before.
-- **Hamborjer Håli (Hamburger Hallig), 2026-11-03 (#182)**, by the same
-  rule with no code change: its `admin_level=10` boundary, which the
-  curation row made the island polygon, includes a ~30 m strip along the dam
-  road to the mainland, and the interior point lay on it, 1.3 km east of the
-  Hallig. The relation now has a 0.84 km² square (the boundary's area, so
-  the rank stays) at the centroid of the boundary without the strip
-  (54.6004/8.8195), from z12 as before, with `frasch:kind=hallig` in its
-  `set_tags`. Changing OSM was ruled out: the strip is plausible as a
-  cadastral boundary.
-- **Hamborjer Håli, further south-west, 2026-11-03 (#185)**: the centroid
-  of #182 lay on the Hallig's north-eastern edge, pulled there by the salt
-  marsh the boundary includes along the dam. The square's centre moved
-  halfway from it to the south-western shore along the south-west ray
-  (54.6004/8.8195 → shore 54.5970/8.8136), to 54.5987/8.8165; area, first
-  zoom and `set_tags` stay.
-
-## Decided 2026-11-03: Nordstrand is labelled once, as the island (issue #174)
-
-Since #168 the island square carries the names of the row `e-stronj` in
-every dialect, while the village node that took over from z12 had only a
-Mooring name: in every other dialect view the label switched dialect at the
-hand-over.
-
-- **The village label goes, not the island's.** No settlement is called
-  Nordstrand; `node/85929111` is the municipality's label, and the places on
-  the ground are its parts. So, as on Pellworm, the island label shows at
-  every zoom (the square's `maxzoom=11` is gone) and the parts sit beneath
-  it. Giving the village node the row's other names was turned down.
-- **An empty `set_tags` value removes the tag**: `place=` takes `place` off
-  the object, so OpenMapTiles does not label it. It applies wherever
-  `set_tags` does (`curationlist.with_set_tags`): an object, a square, a
-  local reference's node, which then has no `place` and stops the build. A
-  square's row may set no `place` but `island`. A dedicated `hide` column and
-  `maxzoom=0` were turned down.
-- **The parts are promoted to `hamlet`** (Odebel, Sööderhuuwen,
-  Norderhuuwen, Ängloun, Weesten), as Norder-/Süder-Waygaard are, so they
-  show from z11 instead of a `neighbourhood`'s z14; Sööden, Naidik and
-  Ååsterdik stay neighbourhoods. Mursemkuuch shows once, on its hamlet node:
-  its neighbourhood node's `place` is removed.
-- **Ååsterdik is split** (#187): the Wiedingharde row is unmatched, and
-  Nordstrand's Osterdeich has a `settlement` row of its own.
-
-## Decided 2026-11-15: a listed place takes its Frisian names from the list alone (issue #161)
-
-Revises the "Listed objects too" point of 2026-10-03 (#81). For a place the
-name list has, the list is the source of truth, but OSM's `name:frr` (no
-stated dialect) still showed for it in two ways: as an extra "Frisian (OSM)"
-line on the card of a clicked label wherever it differed from every list name
-(Bandixwarf: *Baondiksweerw* from the list and *Baondiksweerew* from OSM; 78
-objects), and as the local name where the list gave none (Husum → *Hüsem*;
-17 objects of 16 rows). Both go. The names that disappear are listed in #196
-for review.
-
-- **The local name of an object a row claims is the list's alone**: `local`,
-  else the list's name in the variety of the area (`placenames.resolve`).
-  OSM's name is no fallback, in a Frisian and in a Low Saxon area alike. So
-  `frasch:local` in the tiles and `local` in `names.json` are no longer set
-  from OSM for listed places, and the inject report's count of them is gone.
-  Claimed means by reference, through the row's QID or as a member way of
-  its waterway relation.
-- **The card of a listed place has no "Frisian (OSM)" line**, done in the
-  card (`names/card.ts`), not in the tiles: they keep `name:frr`.
-- **The headline still follows the label** (owner's choice over ignoring the
-  tile's `name:frr` altogether). The label chain of a Frisian view still has
-  `name:frr`, and a listed place always has a Frisian name in the list
-  (`placelist.on_map`), which comes before it, with one exception: outside
-  the Frisian areas `frasch:local` comes after `name:frr`, so a place there
-  whose only Frisian name is its `local` form is labelled with OSM's. No
-  such row exists (#197). The card then shows what the label shows, as
-  everywhere (`mapCardConsistency`, the scenario *Lüüm*).
-- **`name_frr` is gone from `names/osm_objects.json`** (owner's choice over
-  leaving a field nothing reads): `frasch.locate` no longer records it. The
-  injector's pre-pass over the extract, which gives the objects no row
-  claims their local name, takes `name:frr` from its own tag scan.
-- **Unchanged**: places the list does not have (the card line, and OSM's
-  `name:frr` as the local name inside a dialect area, #81); the labels of
-  the Frisian views; Low Saxon as a name (`names.nds` is the list's, else
-  OSM's `name:nds`). In the Low Saxon area the local name of a listed place
-  no longer falls back to OSM either, but its label is the same string:
-  `name:nds` is the next step of the chain.
-
-Visible effect: the 16 rows of #196 (table 1) have no local name until one is
-added to the list. The local view labels them in Low Saxon or German, in the
-Frisian views nothing changes. In the tiles it takes effect with the next
-tile build; the committed search index is rebuilt.
+# frasch-maps: Decisions
+
+A Google-Maps-like web map with all labels and UI in **North Frisian**, based on the
+**OpenMapTiles** vector tile schema. This file holds the decisions behind it that the code does
+not show by itself.
+
+## How this file is kept
+
+- It states the **current** decisions, ordered by topic. It is not a log.
+- An entry belongs here only if the code does not show it and someone could undo it by accident:
+  domain, linguistic and legal choices, the owner's choices, rejected alternatives, special cases
+  in the data.
+- One bullet per decision: the decision, its reason, the rejected alternative, the issue number.
+- A changed decision replaces its entry. Nothing is appended, and nothing is marked "superseded".
+- How the code works belongs in the code and the READMEs; what a change did, in its pull request;
+  open questions and planned work, in GitHub issues.
+- History: the issues named in the entries, and git. The full log up to 2026-11-15 is
+  [this file at `30d632d`](https://github.com/t-andresen/frasch-koord/blob/30d632d/docs/project-decisions.md).
+
+## Scope
+
+- **Phase 1 covers North Frisia; later come country names and larger cities worldwide, with
+  detailed Frisian names only for Germany, Denmark and the Netherlands.** Name coverage and tile
+  extent are independent: tiles may cover more than the name list and then fall back to German or
+  local names.
+- **One full planet build in the OpenMapTiles schema (~100 GB PMTiles) is the single style
+  source.** The map must never be blank anywhere. The planet does not fit on the dev machine, so
+  development uses the Schleswig-Holstein extract (plus Denmark for name matching) and the
+  planet is built once on a rented VM. Rejected: "world to z7 plus a detail region", because it
+  is blank outside the region beyond z7 or shows duplicate labels. (#200)
+
+## Languages & dialects
+
+- **Names, tiles and UI are dialect-aware from the start, although Mooring is the initial
+  dialect.** Other dialects (Fering, Öömrang, Sölring, ...) are added later, with per-dialect
+  name fields and per-dialect UI translation files. Tags are `frr-x-<subtag>`: ISO 639-3 `frr`
+  plus a private-use subtag (at most 8 characters), because BCP 47 has no registered dialect
+  subtags.
+- **`names/dialects.csv` is the only list of dialects.** The place-list columns, the injected
+  `name:*` tags, Planetiler `--languages`, the search index and the frontend selector all derive
+  from it, so adding a dialect is one line plus a column and no code change. Only rows with
+  `view=yes` are selectable, and only a Frisian dialect can be a map view.
+- **The registry also holds the other local varieties: `nds` (Low Saxon, "Plattdeutsch") and
+  `jut` (Synnejysk, "Süderjütisch").** A `language` column (ISO 639) tells them apart. A tag is
+  `<language>` or `<language>-x-<subtag>`; a Frisian row needs a subtag, because a bare `frr` is
+  OSM's generic `name:frr`. "Frisian" means `language == frr`. (#83)
+- **`names/places.csv` has one row per place and one column per dialect, plus a `local`
+  column.** North Frisian is a dozen varieties, so each is first-class. `local` holds the form
+  the people of the place use where it differs from the area's dialect (sub-dialects such as
+  Fahretoft); empty means the area's dialect, and a bracket remark names the variety, e.g.
+  `Brouersweerw (Foortuftinge)`. There is no catch-all `other` column.
+- **Low Saxon is the local majority language in northern Germany.** Südergoesharde is extinct
+  (1981), but its historic names still label the local view. Nordstrand, Pellworm and Eiderstedt
+  get no Frisian area (Low Saxon there). Names of the old sheet marked `(Gooshiirdinge)` sit in
+  the Goesharde the place lies in. There is no `older` column: island and Hallig names live in
+  their dialect's column, mainland names in the Harde's column where OSM's `name:frr` confirms
+  the form. These are the owner's decisions.
+- **The `nds` and `jut` columns follow `de`; they are no Frisian names.** A row is never named
+  by them as a Frisian name (`any_name`), the matcher does not search them, and a row whose only
+  names are `nds`/`jut` stays off the map. For single-name fallbacks they rank after German and
+  Danish but are not left out. (#83, #154)
+- **Low Saxon is one name: the list's, else OSM's `name:nds`.** It is decided in `resolve`
+  alone, and the tiles keep OSM's where the list has none, as with `name:de`. Rejected: a
+  separate search field `name_nds` and card line `card.lowSaxon`. (#83, #61)
+
+## Name list, licence & legal
+
+- **The name list is the owner's own work, kept in git as the hand-edited `names/places.csv`
+  and merged into the tiles at build time.** The original Google Sheet is no longer consulted;
+  its export is archived in `names/bootstrap/`, and only map-relevant columns were imported
+  (inhabitant, nds and source columns dropped on purpose). Names are edited as CSV through pull
+  requests. Rejected: upstreaming to OSM `name:frr` as the main strategy, because OSM has one
+  `frr` field without dialects, so a custom mechanism is needed anyway (contributing to OSM can
+  still happen separately). Rejected: swapping labels in the browser, because big lookup
+  expressions are slow and OSM IDs are not reliably present in OpenMapTiles output.
+- **The published name list "Frasche stääsnoome" (`names/places.csv` and the other hand-edited
+  files in `names/`) is licensed under ODbL 1.0, contents under DbCL 1.0, full text in
+  `names/LICENSE`.** Attribution string: "Frasche stääsnoome, Thore Andresen, ODbL 1.0". The
+  tiles are ODbL anyway (OSM-derived), so a permissive licence gains nothing; ODbL lets anyone
+  push names into OSM without a waiver, and share-alike returns extended lists to the public.
+  Accepted cost: third parties cannot carry the names into Wikidata (CC0); the author can, as
+  rights holder. This works because the sources are many cited publications (Hoekstra 2015,
+  Nordfriisk Instituut, Löfstedt 1931, literary texts) and `places.csv` holds only OSM
+  references, not OSM names or coordinates. Rejected: CC BY-SA, because OSM cannot import it.
+- **The map always shows "© OpenStreetMap contributors" and the OpenMapTiles credit.** It is a
+  fixed licence notice in every UI language, because ODbL applies to published databases
+  derived from OSM. (#22)
+- **The code is MIT (root `LICENSE`); the style fork keeps OSM Bright's BSD / CC BY notice in
+  `web/src/map/style/LICENSE-osm-bright.md`.** (#22)
+
+## Dialect areas
+
+- **The dialect of an object is taken by point-in-polygon against
+  `names/dialect_areas.geojson`, smallest area wins.** `names/dialect_areas.csv` names the OSM
+  municipalities and island polygons of each dialect and `build_dialect_areas.py` builds the
+  committed geojson. Assignment is by geometry, never by name; "smallest wins" resolves nesting
+  (Hamburger Hallig lies inside Reußenköge).
+- **Mainland areas are a researched draft, assigned to the six Harden by historic Harde
+  membership from German Wikipedia.** Rows whose `note` says `medium` or `low` need the owner's
+  check, above all the Gotteskoog border villages Holm, Uphusum and Galmsbüll and the assignment
+  of Stedesand to the Karrharde. (#2)
+- **Bohmstedt, Drelsdorf and Ahrenshöft follow the documented Mittelgoesharder dialect, not
+  their historic Harde membership.** They form one parish cluster and are the core
+  Mittelgoesharder-Friesisch villages, although Ahrenshöft belonged to the Nordergoesharde. (#2)
+- **Synnejysk is the default local language of Schleswig, Low Saxon the default south of it.**
+  `jut` rows cover Schleswig-Flensburg, Flensburg and the Nordfriesland mainland that no Frisian
+  row claims, each marked "low - default from #83, unverified". A place in no area is Low Saxon:
+  Eiderstedt, Nordstrand, Elisabeth-Sophien-Koog, Pellworm, Friedrichstadt, the Nordsee-Treene
+  villages south and east of Husum, Stapelholm, the city of Schleswig and Rendsburg-Eckernförde's
+  part of Schleswig. These are the owner's decisions; the `jut` rows are a starting point to
+  review. North of the border is #15. (#83)
+- **`names/dialect_areas_parts.geojson` has one Feature per municipality and is never read by
+  the pipeline.** It exists for review, because the dissolved file shows neither municipality
+  name nor note, so a wrong assignment is invisible. It includes Kreis Nordfriesland
+  municipalities no row claims (`assigned: false`), found by `admin_level=8` relations with a
+  `de:regionalschluessel` starting `01054` (rejected: a bounding box, which catches neighbouring
+  Kreise). Unassigned features carry no `dialect`, so `AreaIndex.from_geojson` refuses the file;
+  its unit is the municipality, so reading it would silently change every dialect lookup.
+  Simplification is 0.0001° (~11 m), since 0.0005° leaves cracks between neighbours. It is
+  committed because regenerating needs the gitignored 158 MB extract. (#2)
+- **The dev-only review view `?areas` is read-only and does not model confidence.** It colours
+  one fill per dialect and shows the `note` verbatim on selection. Rejected: a patch file as in
+  `?curate`, because the CSV is small and hand-edited and a patch file would add a second way to
+  change the data; a `confidence` column or note parsing, because the research prose ("best guess
+  only") must not ship to the public site. (#2)
+
+## Matching
+
+- **The matcher compares names exactly after normalisation; there is no fuzzy matching.** A
+  match is the OSM reference `type/id` (several for a split river or dyke) plus the Wikidata item
+  where the object has one. Countries are matched through Wikidata alone.
+- **The matcher only rewrites rows with `status=auto` or with empty `osm` and `wikidata`.**
+  Hand-filled rows are never touched, so `git diff` after a run shows exactly what it proposed. An
+  owner reviews a proposal by writing the `osm` reference, optionally `status=ok`, or `status=skip`.
+- **`frasch update` runs the matcher every time, whatever the stamps say.** The matcher changes
+  `places.csv` and depends on Wikidata's answers, which no stamp covers. Only the scan of an
+  extract is skipped when its output is not stale. Rejected: skipping the matcher by stamp. (#95)
+- **A row holds the objects of its `osm` cell and its Wikidata item, unless it is `skip`.** It
+  holds them also while it is `not_a_place` or has no Frisian name yet; it is on the map only if
+  it holds something, is a place and has a Frisian name. (#94)
+- **Two rows claiming one object or item is an error of the list itself.** `check-inputs` lists
+  it and reading the list refuses it, so every command stops with file and line. It was reported
+  three times with three severities before. Rejected: merging the claims (first non-empty value
+  wins). (#94, #93)
+- **Nothing writes a double claim.** `frasch curate apply` refuses a decision for an object or
+  item another row holds. The matcher counts what it gives out in a run as claimed: of two rows
+  for one place the first gets the object, the second stays unmatched with "... is taken by row
+  `<id>`" (an id, as a line number goes stale). An object whose item another row holds is
+  matched without the item (OSM tags an island and its village with one item); a country, found
+  by its item alone, is then not found. (#94, #98)
+- **A row the matcher matched holds the whole feature against the rows after it, as a human
+  decision does.** Otherwise the second of two rows for one feature got a sibling object (the
+  river's ways when the first got the relation). The exception is a row that finds the object only
+  by a name it merely also goes by (`alt_name`, `old_name`): the dyke Deezbüll Deich carries
+  `alt_name=Deezbülleck`, and the hamlet Deezbülleck keeps its node. Rank cannot tell this case,
+  as an annotated `short_name` ranks like an `alt_name`. (#98, #94)
+- **A peninsula's outline gets the island bonus.** Nordstrand's outline passed as the canonical
+  object of an island but scored 4 instead of 30. (#97)
+## Curation & local places
+
+- **Map changes are made at three levels, without a Planetiler fork.** (1) `names/curation.csv`
+  `set_tags` fix tags per OSM id in the injector; (2) the tile attributes `frasch:kind`,
+  `frasch:minzoom`, `frasch:maxzoom`; (3) style layers per kind in `frasch-bright.json`. OMT drops
+  `place=islet` (Habel, Norderoog, Südfall) and Nordstrand has no island polygon in OSM.
+  Rejected: forking Planetiler.
+- **Label priority is the physical order of the style layers, low priority first.** MapLibre
+  resolves label collisions in reverse layer order (the last symbol layer wins), and
+  `symbol-sort-key` only orders within a layer.
+- **OpenMapTiles sets a label's first zoom by its `place` value; `frasch:minzoom` can only push
+  later.** `hamlet` shows from z11, `isolated_dwelling` and `neighbourhood` from z14. So a
+  hand-placed warft or settlement is a `hamlet` (as OSM's own Hallig Warften are), and
+  `island`/`hallig` get `place=island`. Rejected: `isolated_dwelling` for a warft.
+- **In `set_tags` an empty value removes the tag.** `place=` takes the `place` tag off an object,
+  a square or a local node, so OpenMapTiles does not label it; a local node without `place` stops
+  the build. Rejected: a `hide` column, `maxzoom=0`. (#174)
+- **Nordstrand's parts Odebel, Sööderhuuwen, Norderhuuwen, Ängloun and Weesten are `hamlet`
+  in curation, as Norder-/Süder-Waygaard are.** OSM has `neighbourhood`, which shows only from z14.
+  Sööden, Naidik and Ååsterdik stay neighbourhoods. Mursemkuuch shows once, on its hamlet node,
+  so its neighbourhood node loses `place`. (#174)
+- **OSM lacks many listed places, so they are local places.** Harden do not exist in OSM, most
+  Köge exist only as street or Sielzug names (Gotteskoog has no polder object), about 100 Warften
+  only as building or street names, and the vanished Halligen (Bohnen-, Hasen-, Pohns-,
+  Schweine-, Gross-, Christianshallig) not at all. Nothing is uploaded to OSM.
+- **A place OSM does not have is `local/<slug>`, alone in the `osm` cell, positioned by its
+  curation row.** The slug is lowercase ASCII, digits and hyphens (`local/westerheide-amrum`);
+  `wikidata` stays empty. The mandatory `lat`/`lon` of the curation row place a new node, or only
+  a synthetic square if the row has `polygon_km2`. The build stops on a local reference without
+  a curation row, a local curation row without `lat`/`lon`, or a reference used twice. Curation is
+  keyed by OSM reference, so a coordinate in the list could take no `set_tags`, zoom window or
+  `polygon_km2` (Köge and Harden are areas). Rejected: `lat`/`lon` columns in `places.csv`
+  and a coordinate pseudo key, which write the position twice. Cost: two rows per place.
+- **A synthetic square belongs to the row's own object.** It is centred on the object if that is
+  a node, else on the curation row's `lat`/`lon`, and replaces the object's own place label. The
+  row's position (search entry, dialect lookup, `check-tiles`) is the square's centre, so the
+  search entry lies where the label is. Rejected: changing OSM, as the foreshore is land. (#168)
+- **Oland's square (2.1 km², the coastline polygon's area) is centred on the Sommerdeich ring.**
+  The coastline way covers the foreshore along the rail dam, so its interior point lay outside
+  the Sommerdeich. (#168)
+- **Hamborjer Håli (Hamburger Hallig) is a 0.84 km² square with `frasch:kind=hallig`, from z12,
+  centred on 54.5987/8.8165.** The `admin_level=10` boundary includes a ~30 m strip along the dam
+  road, which put its interior point 1.3 km east of the Hallig. The centre lies halfway between
+  the strip-less centroid, which the salt marsh pulls to the north-eastern edge, and the
+  south-western shore. Rejected: changing OSM, as the strip is plausible as a cadastral
+  boundary. (#182, #185)
+- **`places.csv` stays the single hand-edited source; the dev-only curation view (`?curate`)
+  only appends decisions to `names/work/curate-patch.jsonl`.** `curate apply` writes them into
+  `places.csv` and, for a local reference, a position row into `curation.csv`. The matcher's
+  ownership rule is thus enforced in one place, and a decision against a stale reference is
+  refused. Rows are addressed by their stable id, not their names. Rejected: editing the CSV in
+  the browser, deciding from `REPORT.md` by hand. (#1, #23)
+- **A reference is written whole.** A decision without a Wikidata item clears the row's item, and
+  `skip` clears `osm` and `wikidata`. Otherwise an unreviewed auto match stayed beside `skip` and
+  read as hand-filled once `skip` was removed. (#97)
+## Labels & naming
+
+- **A Frisian dialect view labels with the first present of these tile keys.** In a Frisian
+  area: `name:<dialect>`, `frasch:local`, the other Frisian dialects in registry order,
+  `name:frr`, `name:nds`, `name:de`, `name:latin`, `name`. Elsewhere `frasch:local` moves behind
+  `name:frr`. A Synnejysk or Low Saxon local name thus labels a Frisian view only where no Frisian
+  name is known. Map, card and search follow this one chain (`labelChain`). Rejected: `name:frr`
+  ahead of the dialect tag, because OSM's ~510 `name:frr` objects mix dialects (Kiel has
+  *Kil*). (#83)
+- **The local view labels with `frasch:local`, `name:nds`, `name:latin`, `name`, `name:de`.**
+  There is deliberately no `name:frr`, which outside a Frisian area is an exonym (Pinneberg is
+  *Pinebärj*) or another dialect's name. `name:de` is last, so a feature with only a German name
+  stays labelled. Low Saxon is the local majority language everywhere in the tiles. (#32)
+- **A place the list has takes its local name from the list alone.** For an object a row claims
+  (by reference, by QID, or as member way of its waterway relation) it is the list's `local`, else
+  the list's name in the variety of the area. OSM's `name:frr`/`name:nds` is no fallback; it
+  showed for listed places (Husum gave *Hüsem*). Listed places without a `local` have no local
+  name until one is added, and the local view then shows Low Saxon or German. (#161, #196)
+- **An object no row claims takes OSM's own name in the area's language as `frasch:local`.**
+  That is `name:frr` in a Frisian area, `name:nds` in a Low Saxon one and none in a Synnejysk
+  one: OSM has no `name:jut`, and its Frisian exonym must never become the local name of a
+  Synnejysk place. It applies to every object (streets, stations, offices), so a new `name:frr`
+  reaches the map with the next tile build. Outside an area `name:frr` is an exonym and not
+  used. Rejected: a `within` branch in the style (needs the dialect areas in the browser);
+  recording these objects in `osm_objects.json`, which stays the objects of the list. (#81, #83,
+  #161)
+- **One rule, `placenames.resolve`, gives names and tile keys to the injector and the search
+  export.** A label and its search entry thus cannot disagree. `TILE_KEY` is the only place
+  that defines the keys the injector writes, and `check-tiles` compares each of its fields and
+  the name in every dialect. (#93)
+- **The list's German name is the tiles' `name:de`.** The injector writes the first variant of a
+  row's `de` on every object the row tags; where the list has none, OSM's stays. Map, card and
+  search agree, and the map shows *Norddorf* and *Glücksburg*, not OSM's *Norddorf auf Amrum*
+  and *Glücksburg (Ostsee)*. (#61)
+- **A tile's `name_de` is not a German name.** OpenMapTiles writes it on every feature, with the
+  plain `name` where OSM has no `name:de`, so the card labelled Danish places (Kalleshave)
+  "Deutsch". Rejected: reading `name_de` as German. (#104)
+- **A generic name in no known language gets no language label.** On the headline it has none,
+  elsewhere it is not shown; it is named only where it equals the place's `name:de` or
+  `name:da`. Accepted cost: 153 features with `name:nds` and no `name:de` show only the Low Saxon
+  name. (#104)
+- **For a clicked label, the local name and dialect area come from its own tile feature.** The
+  list entry's serve a card opened from search or a link. An entry lies where its first object
+  lies, so a second object of the row (Nordwarft: the way on the Hallig, the node in the
+  Nordergoesharde) can lie in another area with another local name. (#89, #104)
+- **The card of a listed place has no "Frisian (OSM)" line; its headline follows the label.**
+  The line showed where OSM's `name:frr` differed from every list name (Bandixwarf). The tiles
+  keep `name:frr`. Places the list does not have keep the line. Rejected: ignoring the tile's
+  `name:frr` altogether. Known edge: outside Frisian areas `frasch:local` follows `name:frr`, so
+  a listed place with only a `local` Frisian name would show OSM's; no row is so (#197). (#161)
+- **The card shows every known Low Saxon and Synnejysk name, also when it equals German or the
+  headline (Husum, Treen).** The reader sees that the name is the same, not that it is unknown.
+  Only the headline's own name gets no line. Rejected: hiding names identical to German. (#83)
+- **Where exactly one name is needed, the chain is the Frisian columns, `de`, `da`, then the
+  other local varieties (`nds`, `jut`).** It names a created row's id and the curation view's
+  label, so a place with only an `nds` or `jut` name is not nameless. Every language counts, but
+  Low Saxon and Synnejysk come after German and Danish. `any_name` stays Frisian-only. (#154)
+- **Nordstrand is labelled once, as the island, at every zoom.** The island square carries the
+  row's names in every dialect; the village node `node/85929111` loses `place` (no settlement is
+  called Nordstrand), and its parts show as hamlets beneath, as on Pellworm. A village label from
+  z12 had only a Mooring name, so the label switched dialect. Rejected: giving the village node
+  the row's other names. (#174, #168)
+
+## Tiles & build
+
+- **The map uses vector tiles in the OpenMapTiles schema, in one PMTiles file, drawn with
+  MapLibre GL JS.** Vector tiles let the browser switch dialect without separate tile sets; the
+  schema keeps existing OMT styles usable; PMTiles has low lock-in (`pmtiles convert`, `martin`);
+  MapLibre gives smooth zoom and rotation. The tile URL is the frontend's only dependency on
+  hosting.
+- **Planetiler is the stock jar, never a fork; names reach it through the OSM extract.** A
+  pre-processing step adds `name:frr-x-mooring` and the other dialect tags to the extract. This
+  keeps the name list independent of the tile tool. Rejected: forking Planetiler.
+- **Planetiler's name tag lists (`--languages`, `--extra_name_tags`) come from the commands
+  `frasch dialects --tags` and `frasch tile-keys`.** A test fails when the injector writes a key
+  Planetiler is not told to carry, because such a key would silently miss the tiles.
+  (#93)
+- **Every build input is pinned by sha256: the Planetiler jar, Natural Earth, the water polygons,
+  the lake centerlines.** Two builds of one commit must not differ in their inputs. Natural Earth
+  and the water polygons have no versioned upstream URL, so they are mirrored as assets of a
+  release of this repository. Rejected: pinning the upstream URLs by hash, because it breaks with
+  every upstream update. (#28)
+- **Geofabrik extracts are verified by their `.md5`; `SNAPSHOT=yymmdd` builds from a dated
+  extract, while the name pipeline stays on `-latest`.** The `-latest` extract changes daily, so
+  CI cannot rebuild extract-derived files and only checks their stamps. (#24)
+- **`names.json` and the tiles carry a `built_from` stamp (git blob hashes of their inputs), and
+  CI checks it.** A committed `names.json` was once built from an uncommitted `places.csv`, and a
+  fresh clone could not rebuild it. (#24)
+- **Each finished archive is the asset of its own release of this repository, and `web/tiles.lock`
+  pins the one the site uses (URL and sha256).** A frontend contributor or CI cannot get a map
+  without running the tile pipeline, and a build must record which archive it shipped. The site
+  build ships the pinned archive or none and stops at its start when archive or glyphs are
+  missing. `public/tiles/` is for the dev server only. Rejected: a warning instead of stopping
+  (owner's choice). (#28)
+- **`just tiles` links its archive for the dev server only when the file name is the one
+  `web/tiles.lock` pins.** The dev server serves only the pinned name; another region's build
+  links nothing. `just setup` and `npm run fetch-assets` link the pinned archive again. Rejected:
+  a `--reset` flag for `just setup` alone (owner's choice). (#169)
+- **A differing `built_from` between the pinned archive and `names.json` only warns, never fails
+  the build.** Archives are published on their own, so the pinned one can legitimately be older
+  than the names. Rejected: failing the build; a runtime check in the browser. (#108)
+- **Every build check runs in one Vite plugin, so a plain `vite build` runs all of them; only
+  `tsc -b` stays outside.** The same rule ("what the lock pins is what is on disk") was written
+  in TypeScript and bash, and a plain `vite build` skipped the output check. One module reads
+  the lock pins, and assets are fetched in Node. Rejected: spawning `tsc -b` inside the plugin
+  (owner's choice); a hand-written zip reader or yauzl (`fflate` needs no dependencies). (#108)
+- **The site ships only the glyph ranges its labels need, listed in the committed
+  `web/fonts.lock`.** The full set is 102 MB per deploy, almost all for scripts no label uses.
+  The list is the Latin blocks and punctuation plus what a survey of the archive found. Ä ö ü å
+  (Mooring) and đ ā (Sölring) must stay covered (owner's requirement). Rejected: deriving the
+  ranges at every build, because a committed list is reviewed in git. (#29)
+- **The build requires a glyph range for every code point of every label and stops when the
+  pinned archive needs one the list lacks.** MapLibre draws some characters itself without asking
+  for their range, but the check does not rely on that internal. With `VITE_TILES_URL` the
+  fetched archive is checked if present, else the build warns. (#29)
+- **A symbol layer that labels a feature by name must carry `"metadata": {"frasch:label": true}`
+  and `["get", "name"]` as its text-field.** `labelLayers` rewrites only marked layers, so an
+  unmarked name layer keeps its upstream text-field. The style file names no URL, since
+  `styleFor` sets its own; a test enforces this. (#112)
+- **Style layers that match nothing in Schleswig-Holstein stay (`highway-shield-us-*`,
+  `landcover-glacier`, `landcover-ice-shelf`, `place-continent`, `place-country-*`).** They match
+  on the planet build that launch needs. Rejected: removing them as dead code. (#112)
+- **The tiles omit the `housenumber` and `mountain_peak` layers (`--exclude_layers`).** No style
+  layer reads them (the archive held 279,451 house numbers). A style layer that reads one needs
+  the flag removed. (#112)
+- **Every square carries the tile attribute `frasch:square=yes`, and `frasch check-tiles` finds
+  squares by it.** The square's way id belongs to the injector, so nothing else ties its label to
+  its row. Rejected: a reserved id range (Planetiler's node map jumps in ids); reading
+  `curation.csv` in check-tiles (a heuristic). (#168)
+## Web app
+
+- **The frontend is plain `maplibre-gl` with the `pmtiles` protocol, MiniSearch and i18next with
+  one UI file per dialect; there is no search backend.** An in-browser index over a JSON file of
+  names is enough for v1. Photon or Pelias come in when the area grows or address search is
+  needed. Rejected: `react-map-gl`.
+- **UI strings are German placeholders until the owner writes the Mooring ones; tooling never
+  invents Mooring strings.** Missing Mooring strings fall back to German. (#5, #7)
+- **One dropdown selects the view, and only registry entries with `view=yes` are offered.** A
+  dialect without a UI translation cannot be offered. The local view uses the Mooring UI,
+  configured in one place. The registry keeps `view=yes|no`, which means exactly "offered as a
+  view", and "view" is the one word for the selector concept. (#105)
+- **The German dialect names live only in the registry `label`, not in `de.json`.** One source
+  for the names. Mooring keeps its own names; a dialect new to the registry needs a name in every
+  UI. (#105)
+- **The UI language follows the view in a `useLayoutEffect`.** A page opened in a non-default view
+  never shows the default's language first. Dev views take the view from the link and write
+  neither `?view=` nor `?place=`. (#103)
+- **The geolocate button is MapLibre's `GeolocateControl`, with labels from the locale files.**
+  MapLibre reads its `locale` option once and cannot change it, and no view switches the UI
+  language at runtime, so the button keeps the language the map was created in. Owner's choice:
+  no live relabelling. Rejected: special cases for the phone sheet covering the dot or a position
+  outside the map's area. (#5, #162)
+- **The link is the initial pick: the selection starts with the `?place=` link read at mount,
+  before the map writes its own hash.** No card shows until the name list has the entry. A pick by
+  hand replaces the pending link for good, and `close` closes a card only. `?place=` is the
+  entry's id, or the pick's own reference while the list is unavailable. Owner's decision.
+  Rejected: one `useOpenLinked` for the public app and the dev panels. (#103)
+- **Old share links keep working: `entryLookup` finds an entry by any of its OSM references, and
+  ignores a trailing `#<line>`.** (#104, #112)
+- **The browser reads an `osm` cell in one module, and the Wikidata pattern `^Q[0-9]+$` comes
+  from the JSON schemas.** Each pattern is typed once per contract; `\d` would accept non-ASCII
+  digits, so Python uses `[0-9]+`. The schema's 5 kB in the bundle is accepted. Rejected: pattern
+  copies in the code. (#102)
+
+## Tooling & architecture
+
+- **Every `places.csv` row has a stable `id`, and an id never changes.** It is a slug of the
+  row's first name along the single-name chain, with `-2`, `-3` on repeats. Matches, curation,
+  the search index, `frasch:ref` in tiles and `?place=` links all use it. Line numbers appear only
+  in human messages: inserting a row renumbered all below it, which broke links and made
+  curation decisions fail after hand edits. Old links and tiles still resolve through the entry's
+  `osm` field. `local/` slugs use the same fold (ü becomes u), and the browser folds no name;
+  the matcher's transliteration of umlauts is for matching only and is no slug rule. Rejected:
+  identification by line number or by kind plus names; a second folding rule. (#23, #102, #154)
+- **A position is worked out once, in `frasch.locate`, and committed as `names/osm_objects.json`.**
+  The injector and the search export both read it and resolve the dialect the same way. Two separate
+  lookups disagreed on Sylt, Amrum, Oland and more. A dialect is assigned per object, not per
+  row; an administrative area above municipality level gets none. A row on the map whose object
+  the file does not know stops the export and the injector. (#24)
+- **The pipeline is defined once, in `frasch/pipeline.py`.** One table gives each generated file
+  its inputs, how it is built and when it is stale; `update`, `check-outputs` and `build <name>`
+  all use it, so a new generated file is one entry. Recipe, `update` and check each had their
+  own answer before and drifted apart. (#95)
+- **`just update` runs all post-edit steps in order and skips slow ones whose inputs are
+  unchanged.** A pure `just` recipe has no timestamps, so it would rescan the extracts (~8 min)
+  every time and could not be tested. It does not build tiles (Java, minutes, not committed) and
+  commits nothing. A failing step stops the run, but a decision `curate.py apply` refuses stays
+  in the patch and the run goes on (exit 1), so one stale browser decision blocks nothing. (#57)
+- **`REPORT.md` stays committed, with a stamp on its last line that CI checks.** The matcher needs
+  the git-ignored candidates, so CI cannot rebuild it. After an edit to `places.csv` or
+  `dialects.csv`, CI fails until `just update` (or `frasch match`) has rewritten it. (#95)
+- **There is one entry point: `uv run just`, and one command, `uv run frasch <command>`, with no
+  launcher scripts.** A flag names the same file in every command, a command accepts only the
+  flags of the files it works on, and abbreviated options are refused, so a path a command would
+  ignore is an error. `just` is a dev dependency because a global one is not pinned by
+  `uv.lock`. (#91, #74)
+- **`check` runs every check, lists the failures at the end, and CI calls the same composites**
+  (`just check-python`, `npm run check`, `npm run smoke`), so local and CI cannot drift. Price:
+  CI shows one step per side, so a failure is found in the log. Rejected: stopping at the first
+  failure. (#74)
+- **`web/` needs no Python.** Its steps live in npm scripts; the `just` recipes only call them.
+  (#28, #74)
+- **Library code returns what it has to say; only a command's `main()` prints or exits.** Results
+  are reports (`ApplyReport`, `ExportReport`, warnings), errors are `ValidationError`s listing
+  every problem, and the command prints. Catching everything reported a programming error as
+  "lookup failed", so only the expected exception types are caught. (#25, #98, #99, #100)
+- **The four hand-edited tables are parsed only by `frasch/tables.py`, and every documented
+  column is required.** Four hand-written readers had three behaviours on `;` separators, wrong
+  cell counts and line numbers after blank lines. Own extra columns are fine. A problem has one
+  shape, `errors.Problem`. (#92)
+- **Stale or foreign file formats are refused, not tolerated.** A work file in an older format
+  stops the run; no code reads a format that no current version writes. (#96)
+- **Files that cross to the web app have a hand-written TypeScript type and a JSON Schema in
+  `names/*.schema.json`.** Python tests validate the writer's output, a TypeScript test pins the
+  type to the schema, and only `parseNames` validates at run time. The types had drifted
+  (`km` nullable in Python only). Rejected: generated types, because of the extra dependency and
+  generated file. (#96)
+- **The fields of a curation action are stated once, in the patch schema.** One `if`/`then`
+  branch per action names the fields it needs and may carry; no hand check repeats them. `allOf`
+  rather than `oneOf`, so validators name the broken rule instead of "matches none". Python
+  `decisions.ACTIONS` is the one table telling actions apart: a new action is one entry plus its
+  schema branch. (#99)
+- **The dev server validates patch entries against the same schema with
+  `@hyperjump/json-schema`.** Hand checks let `polygon_km2: 0` through. Rejected: Ajv, because of
+  its maintenance; `json-schema-library`, which got 1 of 11 probe entries wrong. (#99)
+- **Every injector input is required; there are no `--no-areas` or `--no-curation` flags.** A
+  build without dialect areas injected for minutes and then died in `frasch provenance`. A tile
+  build without them is not wanted. `load_inputs` stops on a missing one before reading the
+  extract. The search index still reads an absent `curation.csv` as "no local places". (#100)
+- **Every part of the dialect areas, assigned or not, goes through the same polygon union.** The
+  union decides where rings start and so which vertices simplifying keeps; skipping it for
+  single-polygon parts changed 13 of 71 unassigned municipalities. The build has no tuning
+  flags. (#101)
+- **Every dev endpoint goes through `vite-plugins/devEndpoints.ts`, with the loopback and
+  same-origin gates.** Under `vite --host` the parts file's research notes were readable from
+  the local network. A failure answers one 500 pointing to the dev server log, never the error
+  text, which may hold an absolute path. (#107)
+- **The frontend table of tile keys is hand-written** as a copy of `placenames.TILE_KEY` plus
+  OSM's own name keys. Nothing pins it to the Python table, so change both together. (#104)
+
+## Testing
+
+- **No text I/O relies on the locale.** Every text-mode open, `read_text`/`write_text` and
+  `subprocess` call names its encoding. `check-python` sets `PYTHONWARNDEFAULTENCODING=1` and
+  pytest turns `EncodingWarning` into an error, so CI fails on the next violation. (#111)
+- **`areaLayers.test.ts` deliberately checks a registry fact:** it fails when a dialect is added
+  without a colour in `DIALECT_COLORS`. It guards against a missing area colour. (#111)
+- **The listed scenarios of the place card come from a generated
+  `web/src/testing/generated/listedScenarios.json`, not from hand edits.** The fixture extract
+  has a place for each; `tiles/tests/test_consistency.py` writes the file and fails when it is
+  stale (`--write-scenarios` rewrites it). Rejected: an entry in the pipeline table, because
+  scenarios are test data, not a pipeline output. (#109)

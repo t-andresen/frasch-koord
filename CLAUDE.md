@@ -8,6 +8,16 @@ Note that the github issue list is not exhaustive. Just because a feature isn't 
 
 Issues are on GitHub (`t-andresen/frasch-koord`): use `gh` locally; in Claude cloud sessions `gh pr` and `gh issue` are blocked (no GraphQL), so use the GitHub MCP tools there. `/setup-matt-pocock-skills` is not needed. There is no `GLOSSARY.md` or `docs/adr/`; decisions are recorded in `docs/project-decisions.md`.
 
+# Recording decisions
+
+`docs/project-decisions.md` states the current decisions, ordered by topic. It is not a log, and it has to stay short (below about 500 lines):
+
+* add an entry only if the code does not show it and someone could undo it by accident: domain, linguistic and legal choices, the owner's choices, rejected alternatives, special cases in the data
+* one bullet per decision, in the section of its topic: the decision, its reason, the rejected alternative, the issue number
+* a changed decision replaces its entry in place; never append a dated section or mark an entry as superseded
+* how the code works, what a change did, test notes and measurements belong in the code, the READMEs, the issue or the pull request, not in this file
+* most tasks add nothing to it
+
 # Architecture
 
 It is important to keep the architecture consistent, maintainable and easy to grasp. Modularize where it make sense and keep standard best practices in mind like KISS, DRY, YAGNI and SOLID.

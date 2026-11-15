@@ -12,7 +12,7 @@ with MapLibre GL JS.
 | [`tiles/`](tiles/README.md) | the tile build: injects the names into an OSM extract, then runs Planetiler |
 | [`frasch/`](names/README.md#code) | the Python code of both, one package; the scripts in `names/` and `tiles/` only launch its commands |
 | [`web/`](web/README.md) | the frontend: React + Vite + TypeScript, MapLibre, PMTiles |
-| [`docs/`](docs/project-decisions.md) | decisions and open questions |
+| [`docs/`](docs/project-decisions.md) | the decisions behind the project and their reasons |
 
 ## Setup
 

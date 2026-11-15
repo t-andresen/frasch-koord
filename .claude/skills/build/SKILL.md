@@ -59,7 +59,7 @@ If part of the task turns out to be impossible to do in this task, ask the user 
 
 ## Phase 4 — Open the PR
 
-Commit in logical steps with clear messages, push the branch, and open the PR with `gh pr create`. The description says what changed and why, lists the decisions from phase 1, names deferred work with its issue links, and references the task issue (`Closes #<N>` when the PR completes it).
+Commit in logical steps with clear messages, push the branch, and open the PR with `gh pr create`. The description says what changed and why, lists the decisions from phase 1, names deferred work with its issue links (a decision goes into `docs/project-decisions.md` only under the "Recording decisions" rules of `CLAUDE.md`; the issue and this description carry the rest), and references the task issue (`Closes #<N>` when the PR completes it).
 
 ## Phase 5 — Review loop (at most 4 reviews)
 

@@ -56,7 +56,7 @@ reason more than the verdict.
 ## Priority 3 — the remaining `medium` rows
 
 The three Mittelgoesharde rows justified by "confirmed **Norder**goesharde" are
-worth a second look: decision #8/#9 in `project-decisions.md` says Bohmstedt,
+worth a second look: the "Dialect areas" section of `project-decisions.md` says Bohmstedt,
 Drelsdorf and Ahrenshöft deliberately follow the documented Mittelgoesharder
 dialect rather than historic Harde membership — check the same reasoning holds
 for Almdorf, Struckum and Vollstedt.
