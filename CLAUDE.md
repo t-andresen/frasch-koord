@@ -10,13 +10,12 @@ Issues are on GitHub (`t-andresen/frasch-koord`): use `gh` locally; in Claude cl
 
 # Recording decisions
 
-`docs/project-decisions.md` states the current decisions, ordered by topic. It is not a log, and it has to stay short (below about 500 lines):
+`docs/project-decisions.md` states the current decisions, ordered by topic. It is not a log, and it has to stay short:
 
 * add an entry only if the code does not show it and someone could undo it by accident: domain, linguistic and legal choices, the owner's choices, rejected alternatives, special cases in the data
 * one bullet per decision, in the section of its topic: the decision, its reason, the rejected alternative, the issue number
 * a changed decision replaces its entry in place; never append a dated section or mark an entry as superseded
 * how the code works, what a change did, test notes and measurements belong in the code, the READMEs, the issue or the pull request, not in this file
-* most tasks add nothing to it
 
 # Architecture
 

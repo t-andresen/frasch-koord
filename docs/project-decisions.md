@@ -103,7 +103,7 @@ not show by itself.
   their historic Harde membership.** They form one parish cluster and are the core
   Mittelgoesharder-Friesisch villages, although Ahrenshöft belonged to the Nordergoesharde. (#2)
 - **Synnejysk is the default local language of Schleswig, Low Saxon the default south of it.**
-  `jut` rows cover Schleswig-Flensburg, Flensburg and the Nordfriesland mainland that no Frisian
+  `jut` rows cover parts of Schleswig-Flensburg, Flensburg and the Nordfriesland mainland that no Frisian
   row claims, each marked "low - default from #83, unverified". A place in no area is Low Saxon:
   Eiderstedt, Nordstrand, Elisabeth-Sophien-Koog, Pellworm, Friedrichstadt, the Nordsee-Treene
   villages south and east of Husum, Stapelholm, the city of Schleswig and Rendsburg-Eckernförde's
@@ -156,6 +156,7 @@ not show by itself.
   as an annotated `short_name` ranks like an `alt_name`. (#98, #94)
 - **A peninsula's outline gets the island bonus.** Nordstrand's outline passed as the canonical
   object of an island but scored 4 instead of 30. (#97)
+
 ## Curation & local places
 
 - **Map changes are made at three levels, without a Planetiler fork.** (1) `names/curation.csv`
@@ -211,6 +212,7 @@ not show by itself.
 - **A reference is written whole.** A decision without a Wikidata item clears the row's item, and
   `skip` clears `osm` and `wikidata`. Otherwise an unreviewed auto match stayed beside `skip` and
   read as hand-filled once `skip` was removed. (#97)
+
 ## Labels & naming
 
 - **A Frisian dialect view labels with the first present of these tile keys.** In a Frisian
@@ -340,6 +342,7 @@ not show by itself.
   squares by it.** The square's way id belongs to the injector, so nothing else ties its label to
   its row. Rejected: a reserved id range (Planetiler's node map jumps in ids); reading
   `curation.csv` in check-tiles (a heuristic). (#168)
+
 ## Web app
 
 - **The frontend is plain `maplibre-gl` with the `pmtiles` protocol, MiniSearch and i18next with
